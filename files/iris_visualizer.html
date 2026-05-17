@@ -1,0 +1,1818 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IRIS 6-DOF — 3D Visualizer</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{
+  font-family:'IBM Plex Mono',monospace;
+  background:#080c14;
+  color:#c8d6e5;
+  min-height:100vh;
+}
+::-webkit-scrollbar{width:6px}
+::-webkit-scrollbar-track{background:#0d1117}
+::-webkit-scrollbar-thumb{background:#1e3a5f;border-radius:3px}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useRef, useCallback, useEffect } = React;
+
+/* ═══════════════════════════════════════════
+   IRIS Robot Dimensions (mm)
+   ═══════════════════════════════════════════ */
+const DIMS = {
+  base_height: 133,  // 110mm base + 23mm PAL platform
+  shoulder_h: 205, shoulder_v: -55,
+  elbow: 138,
+  wrist_pitch: 27,
+  wrist_roll: 43,
+  gripper: 87,
+};
+
+const TOTAL_REACH = DIMS.shoulder_h + DIMS.elbow + DIMS.wrist_pitch + DIMS.wrist_roll + DIMS.gripper;
+
+/* Servo configuration */
+const SERVO_LIST = [
+  { key:"base",        ch:6, offset:75,  min:0,   max:180, dir:1,  label:"Base Rotation", color:"#64748b" },
+  { key:"shoulder",    ch:4, offset:160, min:0,   max:160, dir:-1, label:"Shoulder",       color:"#0ea5e9" },
+  { key:"elbow",       ch:3, offset:43,  min:20,  max:180, dir:-1, label:"Elbow",          color:"#10b981" },
+  { key:"wrist_pitch", ch:2, offset:83,  min:0,   max:170, dir:-1, label:"Wrist Pitch",    color:"#f59e0b" },
+  { key:"wrist_roll",  ch:1, offset:55,  min:0,   max:180, dir:1,  label:"Wrist Roll",     color:"#8b5cf6" },
+  { key:"gripper",     ch:0, offset:0,   min:0,   max:70,  dir:1,  label:"Gripper",        color:"#ef4444", isGripper:true },
+];
+
+const HOME = {};
+SERVO_LIST.forEach(s => HOME[s.key] = s.offset);
+
+const servoToRad = (key, deg) => {
+  const s = SERVO_LIST.find(x => x.key === key);
+  return ((deg - s.offset) * s.dir * Math.PI) / 180;
+};
+
+/* ═══════════════════════════════════════════
+   Forward Kinematics
+   ═══════════════════════════════════════════ */
+function computeFK(sd) {
+  const joints = [];
+  let x=0, y=0, z=0;
+  const baseRad = servoToRad("base", sd.base);
+  const cb = Math.cos(baseRad), sb = Math.sin(baseRad);
+
+  joints.push({x:0,y:0,z:0,label:"Base"});
+
+  // Shoulder
+  z += DIMS.base_height;
+  joints.push({x:0,y:0,z,label:"Shoulder"});
+
+  // Upper arm: with axis (0,-1,0), rotation formula:
+  // dx = fwd*cos(angle) - vert*sin(angle)
+  // dz = fwd*sin(angle) + vert*cos(angle)
+  const sRad = servoToRad("shoulder", sd.shoulder);
+  let dx = DIMS.shoulder_h * Math.cos(sRad) - DIMS.shoulder_v * Math.sin(sRad);
+  let dz = DIMS.shoulder_h * Math.sin(sRad) + DIMS.shoulder_v * Math.cos(sRad);
+  x += dx*cb; y += dx*sb; z += dz;
+  joints.push({x,y,z,label:"Elbow"});
+
+  let totalPitch = sRad;
+
+  // Elbow
+  const eRad = servoToRad("elbow", sd.elbow);
+  totalPitch += eRad;
+  dx = DIMS.elbow * Math.cos(totalPitch);
+  dz = DIMS.elbow * Math.sin(totalPitch);
+  x += dx*cb; y += dx*sb; z += dz;
+  joints.push({x,y,z,label:"Wrist Pitch"});
+
+  // Wrist pitch
+  const wpRad = servoToRad("wrist_pitch", sd.wrist_pitch);
+  totalPitch += wpRad;
+  dx = DIMS.wrist_pitch * Math.cos(totalPitch);
+  dz = DIMS.wrist_pitch * Math.sin(totalPitch);
+  x += dx*cb; y += dx*sb; z += dz;
+  joints.push({x,y,z,label:"Wrist Roll"});
+
+  // Wrist roll -> gripper axis
+  dx = DIMS.wrist_roll * Math.cos(totalPitch);
+  dz = DIMS.wrist_roll * Math.sin(totalPitch);
+  x += dx*cb; y += dx*sb; z += dz;
+  joints.push({x,y,z,label:"Gripper Axis"});
+
+  // Gripper tip
+  dx = DIMS.gripper * Math.cos(totalPitch);
+  dz = DIMS.gripper * Math.sin(totalPitch);
+  x += dx*cb; y += dx*sb; z += dz;
+  joints.push({x,y,z,label:"EE Tip"});
+
+  return joints;
+}
+
+/* ═══════════════════════════════════════════
+   3D Projection (orbit camera)
+   ═══════════════════════════════════════════ */
+function project(x3,y3,z3, camH, camV, zoom, cx, cy) {
+  const ch=Math.cos(camH), sh=Math.sin(camH);
+  const cv=Math.cos(camV), sv=Math.sin(camV);
+  const rx = x3*ch + y3*sh;
+  const ry = -x3*sh*sv + y3*ch*sv + z3*cv;
+  return { px: rx*zoom + cx, py: -ry*zoom + cy };
+}
+
+/* ═══════════════════════════════════════════
+   Simple Numerical IK (CCD-like)
+   ═══════════════════════════════════════════ */
+function solveIK(targetX, targetY, targetZ, currentServos) {
+  const sd = {...currentServos};
+  const activeJoints = ["base","shoulder","elbow","wrist_pitch"];
+  
+  for(let iter=0; iter<200; iter++){
+    const joints = computeFK(sd);
+    const ee = joints[joints.length-1];
+    const err = Math.sqrt((ee.x-targetX)**2+(ee.y-targetY)**2+(ee.z-targetZ)**2);
+    if(err < 1) return sd; // <1mm
+
+    for(const key of activeJoints){
+      const s = SERVO_LIST.find(x=>x.key===key);
+      const cur = sd[key];
+      let bestDeg = cur, bestErr = err;
+      
+      for(const delta of [-2, -0.5, 0.5, 2]){
+        const test = Math.max(s.min, Math.min(s.max, cur+delta));
+        sd[key] = test;
+        const tj = computeFK(sd);
+        const te = tj[tj.length-1];
+        const te2 = Math.sqrt((te.x-targetX)**2+(te.y-targetY)**2+(te.z-targetZ)**2);
+        if(te2 < bestErr){ bestErr=te2; bestDeg=test; }
+      }
+      sd[key] = bestDeg;
+    }
+  }
+  return sd;
+}
+
+/* ═══════════════════════════════════════════
+   Ghost trail for animation
+   ═══════════════════════════════════════════ */
+
+/* ═══════════════════════════════════════════
+   Main App
+   ═══════════════════════════════════════════ */
+const BRIDGE_URL = "http://localhost:8765";
+
+function App() {
+  const [servoDeg, setServoDeg] = useState({...HOME});
+  const [camH, setCamH] = useState(-0.6);
+  const [camV, setCamV] = useState(0.75);
+  const [zoom, setZoom] = useState(0.7);
+  const [dragging, setDragging] = useState(false);
+  const lastM = useRef({x:0,y:0});
+  const [ikTarget, setIkTarget] = useState({x:300, y:0, z:200});
+  const [showIkTarget, setShowIkTarget] = useState(false);
+  const [ikError, setIkError] = useState(null);
+  const [connected, setConnected] = useState(false);
+  const [liveMode, setLiveMode] = useState(false);
+  const sendTimer = useRef(null);
+  const [demoRunning, setDemoRunning] = useState(false);
+  const [demoSpeed, setDemoSpeed] = useState(2000);
+  const [demoLog, setDemoLog] = useState([]);
+  const demoRef = useRef(null);
+  const [demoMode, setDemoMode] = useState("random");      // "random" | "pattern"
+  const [demoPattern, setDemoPattern] = useState("circle"); // line_x | line_y | circle | square | zigzag
+  const [demoZ, setDemoZ] = useState(80);                  // mm, height held constant in pattern mode
+  const patternRef = useRef({ id: null, t: 0, lastServos: null, busy: false });
+  const [ch5Manual, setCh5Manual] = useState(false);
+  const [ch5Value, setCh5Value] = useState(20);
+  const [gripperOpen, setGripperOpen] = useState(true);
+
+  // ─── Vision state ───
+  const [visionEnabled, setVisionEnabled] = useState(false);
+  const [visionCalib, setVisionCalib] = useState(null);
+  const [visionTestMode, setVisionTestMode] = useState(true);
+  const [visionPickZ, setVisionPickZ] = useState(100);
+  const [visionLastClick, setVisionLastClick] = useState(null);
+  const [visionLog, setVisionLog] = useState([]);
+
+  // ─── Gemini state ───
+  const [geminiPrompt, setGeminiPrompt] = useState("");
+  const [geminiLoading, setGeminiLoading] = useState(false);
+  const [geminiObjects, setGeminiObjects] = useState([]);
+  const [geminiRaw, setGeminiRaw] = useState("");
+  const [geminiAutoMove, setGeminiAutoMove] = useState(false);
+
+  // ─── IRIS Agent state ───
+  const [agentMessages, setAgentMessages] = useState([]);
+  const [agentInput, setAgentInput] = useState("");
+  const [agentLoading, setAgentLoading] = useState(false);
+  const [agentHistory, setAgentHistory] = useState([]);
+  const agentLogRef = useRef(null);
+  const [isListening, setIsListening] = useState(false);
+  const [ttsEnabled, setTtsEnabled] = useState(true);
+  const [ttsVoice, setTtsVoice] = useState(null);
+  const [availableVoices, setAvailableVoices] = useState([]);
+  const recognitionRef = useRef(null);
+  const [sttSupported] = useState(() => typeof window !== 'undefined' && ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window));
+  const [ttsSupported] = useState(() => typeof window !== 'undefined' && 'speechSynthesis' in window);
+
+  // Check bridge connection
+  useEffect(() => {
+    const check = () => {
+      fetch(BRIDGE_URL + "/ping").then(r => r.json())
+        .then(d => {
+          setConnected(d.serial === true);
+          if (d.vision) {
+            fetch(BRIDGE_URL + "/vision/status").then(r => r.json())
+              .then(v => setVisionCalib(v))
+              .catch(() => {});
+          }
+        })
+        .catch(() => setConnected(false));
+    };
+    check();
+    const iv = setInterval(check, 3000);
+    return () => clearInterval(iv);
+  }, []);
+
+  // Send single servo to ESP32
+  const sendServo = (ch, angle) => {
+    if (!liveMode || !connected) return;
+    fetch(`${BRIDGE_URL}/servo?ch=${ch}&angle=${Math.round(angle)}`).catch(() => {});
+  };
+
+  // Send gripper INSTANT (bypass smooth move) — always max speed
+  const sendGripperInstant = (angle) => {
+    if (!connected) return;
+    fetch(`${BRIDGE_URL}/gripper?angle=${Math.round(angle)}`).catch(() => {});
+  };
+
+  // Toggle gripper: OPEN (0°) ↔ CLOSED (70°)
+  const toggleGripper = () => {
+    const newOpen = !gripperOpen;
+    const angle = newOpen ? 0 : 70;
+    setGripperOpen(newOpen);
+    setServoDeg(p => ({...p, gripper: angle}));
+    if (connected) sendGripperInstant(angle);
+  };
+
+  // Send all servos to ESP32 (excludes gripper — gripper uses instant endpoint)
+  const sendAllServos = (sd) => {
+    if (!connected) return;
+    const payload = {};
+    SERVO_LIST.filter(s => !s.isGripper).forEach(s => { payload[s.ch] = Math.round(sd[s.key]); });
+    // Add CH5 mirror
+    payload[5] = ch5Manual ? ch5Value : 180 - Math.round(sd.shoulder);
+    fetch(BRIDGE_URL + "/servos", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify(payload)
+    }).catch(() => {});
+  };
+
+  const W = 750, H = 550, CX = W/2, CY = H*0.7;
+
+  const handleServo = (key, val) => {
+    const v = Number(val);
+    setServoDeg(p => ({...p, [key]:v}));
+    // Send to ESP32 in live mode (throttled)
+    if (liveMode && connected) {
+      const s = SERVO_LIST.find(x => x.key === key);
+      if (s) {
+        clearTimeout(sendTimer.current);
+        sendTimer.current = setTimeout(() => {
+          sendServo(s.ch, v);
+          // Also send CH5 mirror if shoulder
+          if (key === "shoulder" && !ch5Manual) sendServo(5, 180 - v);
+        }, 30);
+      }
+    }
+  };
+
+  const resetHome = () => {
+    setServoDeg({...HOME});
+    setGripperOpen(true);
+    if (liveMode && connected) sendAllServos({...HOME});
+    if (connected) sendGripperInstant(0);
+  };
+
+  const pushToRobot = () => sendAllServos(servoDeg);
+
+  const joints = computeFK(servoDeg);
+  const ee = joints[joints.length-1];
+  const pts = joints.map(j => project(j.x,j.y,j.z, camH,camV,zoom, CX,CY));
+
+  // Grid
+  const gridLines = [];
+  for(let i=-400;i<=400;i+=100){
+    const a=project(i,-400,0,camH,camV,zoom,CX,CY), b=project(i,400,0,camH,camV,zoom,CX,CY);
+    gridLines.push({x1:a.px,y1:a.py,x2:b.px,y2:b.py});
+    const c=project(-400,i,0,camH,camV,zoom,CX,CY), d=project(400,i,0,camH,camV,zoom,CX,CY);
+    gridLines.push({x1:c.px,y1:c.py,x2:d.px,y2:d.py});
+  }
+
+  // Axes
+  const o=project(0,0,0,camH,camV,zoom,CX,CY);
+  const axX=project(60,0,0,camH,camV,zoom,CX,CY);
+  const axY=project(0,60,0,camH,camV,zoom,CX,CY);
+  const axZ=project(0,0,60,camH,camV,zoom,CX,CY);
+
+  // IK target projected
+  const ikPt = showIkTarget ? project(ikTarget.x,ikTarget.y,ikTarget.z,camH,camV,zoom,CX,CY) : null;
+
+  // Workspace sphere (approximate)
+  const reach = TOTAL_REACH;
+
+  const onDown = (e) => {
+    setDragging(true);
+    const p = e.touches ? e.touches[0] : e;
+    lastM.current = {x:p.clientX, y:p.clientY};
+  };
+  const onMove = (e) => {
+    if(!dragging) return;
+    const p = e.touches ? e.touches[0] : e;
+    const dx = p.clientX - lastM.current.x;
+    const dy = p.clientY - lastM.current.y;
+    setCamH(h => h + dx*0.008);
+    setCamV(v => Math.max(0.05, Math.min(1.5, v - dy*0.008)));
+    lastM.current = {x:p.clientX, y:p.clientY};
+  };
+  const onUp = () => setDragging(false);
+  const onWheel = (e) => {
+    e.preventDefault();
+    setZoom(z => Math.max(0.2, Math.min(2, z - e.deltaY*0.001)));
+  };
+
+  // ─── DEMO MODE ───
+  const randomTarget = () => {
+    // Random reachable position within workspace
+    const x = 150 + Math.random() * 250;  // 150-400mm
+    const y = -150 + Math.random() * 300; // -150 to 150mm
+    const z = 20 + Math.random() * 280;   // 20-300mm
+    return {x: Math.round(x), y: Math.round(y), z: Math.round(z)};
+  };
+
+  const sendIKTarget = (target, opts = {}) => {
+    const payload = {x: target.x, y: target.y, z: target.z, send: true};
+    if (opts.seedServos) payload.seed_servos = opts.seedServos;
+    return fetch(BRIDGE_URL + "/ik", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify(payload)
+    })
+    .then(r => r.json())
+    .then(data => {
+      if (data.ok) {
+        const chToKey = {};
+        SERVO_LIST.forEach(s => { chToKey[String(s.ch)] = s.key; });
+        const newServos = {...servoDeg};
+        Object.keys(data.servos).forEach(ch => {
+          const key = chToKey[ch];
+          if (key) newServos[key] = data.servos[ch];
+        });
+        setServoDeg(newServos);
+        setShowIkTarget(true);
+        setIkTarget(target);
+        setIkError(data.error_mm);
+        return data.error_mm;
+      }
+      return 999;
+    })
+    .catch(() => 999);
+  };
+
+  const SAFE_Z = 150; // mm - safe height to pass through
+
+  // ─── PATTERN MODE (smooth, constant-Z paths) ───
+  const PATTERN_INFO = {
+    line_x: { label: "Line • Forward/Back" },
+    line_y: { label: "Line • Left/Right" },
+    circle: { label: "Circle" },
+    square: { label: "Square" },
+    zigzag: { label: "Zigzag" },
+  };
+
+  // Returns {x,y,z} on the pattern at parameter t in [0,1).
+  const patternPoint = (kind, t, z) => {
+    const cx = 280, cy = 0;
+    if (kind === "line_x") {
+      const tt = t < 0.5 ? t * 2 : 2 - t * 2; // 0→1→0 ping-pong
+      return { x: Math.round(190 + tt * 180), y: 0, z };
+    }
+    if (kind === "line_y") {
+      const tt = t < 0.5 ? t * 2 : 2 - t * 2;
+      return { x: 280, y: Math.round(-140 + tt * 280), z };
+    }
+    if (kind === "circle") {
+      const ang = t * Math.PI * 2;
+      return { x: Math.round(cx + 90 * Math.cos(ang)), y: Math.round(cy + 90 * Math.sin(ang)), z };
+    }
+    if (kind === "square") {
+      const r = 90;
+      const corners = [
+        { x: cx - r, y: cy - r },
+        { x: cx + r, y: cy - r },
+        { x: cx + r, y: cy + r },
+        { x: cx - r, y: cy + r },
+      ];
+      const seg = Math.floor(t * 4) % 4;
+      const localT = (t * 4) % 1;
+      const a = corners[seg], b = corners[(seg + 1) % 4];
+      return { x: Math.round(a.x + (b.x - a.x) * localT), y: Math.round(a.y + (b.y - a.y) * localT), z };
+    }
+    if (kind === "zigzag") {
+      // Ping-pong across Y while stepping X
+      const segs = 4;
+      const xMin = 210, xMax = 350, yMin = -130, yMax = 130;
+      const tt = t < 0.5 ? t * 2 : 2 - t * 2;
+      const seg = Math.min(segs - 1, Math.floor(tt * segs));
+      const localT = (tt * segs) - seg;
+      const yDir = seg % 2 === 0 ? 1 : -1;
+      const y = yDir > 0 ? yMin + (yMax - yMin) * localT : yMax - (yMax - yMin) * localT;
+      const x = xMin + (xMax - xMin) * (seg / Math.max(1, segs - 1));
+      return { x: Math.round(x), y: Math.round(y), z };
+    }
+    return { x: cx, y: cy, z };
+  };
+
+  // Map slider (500=slow→5000=fast) to seconds per full pattern cycle.
+  // We invert: bigger slider = faster (shorter cycle).
+  const cycleMsForPattern = () => {
+    // 500 → 16s, 5000 → 4s
+    const norm = (demoSpeed - 500) / 4500; // 0..1
+    return Math.round(16000 - norm * 12000);
+  };
+
+  const servosForSeed = (servos) => {
+    // Visualizer state uses semantic keys; the bridge wants {ch: deg}.
+    const out = {};
+    SERVO_LIST.forEach(s => {
+      if (servos[s.key] !== undefined) out[String(s.ch)] = servos[s.key];
+    });
+    return out;
+  };
+
+  const sendIKTargetWithSeed = (target) => {
+    const seed = patternRef.current.lastServos || servosForSeed(servoDeg);
+    return fetch(BRIDGE_URL + "/ik", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ x: target.x, y: target.y, z: target.z, send: true, seed_servos: seed })
+    })
+    .then(r => r.json())
+    .then(data => {
+      if (data && data.ok) {
+        const chToKey = {};
+        SERVO_LIST.forEach(s => { chToKey[String(s.ch)] = s.key; });
+        const newServos = {...servoDeg};
+        Object.keys(data.servos).forEach(ch => {
+          const key = chToKey[ch];
+          if (key) newServos[key] = data.servos[ch];
+        });
+        setServoDeg(newServos);
+        setShowIkTarget(true);
+        setIkTarget(target);
+        setIkError(data.error_mm);
+        // Remember the solution to use as the warm seed on the next tick.
+        patternRef.current.lastServos = { ...data.servos };
+        return data.error_mm;
+      }
+      return 999;
+    })
+    .catch(() => 999);
+  };
+
+  const pollPose = () => {
+    fetch(BRIDGE_URL + "/pose")
+      .then(r => r.json())
+      .then(data => {
+        if (!data || !data.ok) return;
+        const chToKey = {};
+        SERVO_LIST.forEach(s => { chToKey[String(s.ch)] = s.key; });
+        const newServos = {...servoDeg};
+        Object.keys(data.servos || {}).forEach(ch => {
+          const key = chToKey[ch];
+          if (key) newServos[key] = Math.round(data.servos[ch]);
+        });
+        setServoDeg(newServos);
+        if (data.actual) setIkTarget(data.actual);
+      })
+      .catch(() => {});
+  };
+
+  const startPatternDemo = () => {
+    setDemoRunning(true);
+    setDemoLog([]);
+    patternRef.current.busy = false;
+    const z = demoZ;
+
+    // Approach phase: lift, then go to the starting point at SAFE_Z, then descend.
+    // This still uses the warm-seeded /ik path so we don't flip branches.
+    const joints = computeFK(servoDeg);
+    const currentEE = joints[joints.length - 1];
+    const safeTarget = {
+      x: Math.round(Math.max(180, currentEE.x)),
+      y: Math.round(currentEE.y),
+      z: Math.max(SAFE_Z, Math.round(currentEE.z)),
+    };
+    patternRef.current.lastServos = servosForSeed(servoDeg);
+    const start = patternPoint(demoPattern, 0, z);
+
+    const cycleMs = cycleMsForPattern();
+    const params = { kind: demoPattern, z_mm: demoZ, cycle_ms: cycleMs };
+
+    sendIKTargetWithSeed(safeTarget).then(() => {
+      demoRef.current = setTimeout(() => {
+        sendIKTargetWithSeed({ x: start.x, y: start.y, z: Math.max(SAFE_Z, z) }).then(() => {
+          demoRef.current = setTimeout(() => {
+            sendIKTargetWithSeed(start).then(() => {
+              // Hand off to the bridge — it runs the smooth pattern in a tight
+              // 30ms thread, free of HTTP latency. We just poll /pose at 10Hz
+              // to keep the 3D arm in sync.
+              fetch(BRIDGE_URL + "/pattern/start", {
+                method: "POST",
+                headers: {"Content-Type":"application/json"},
+                body: JSON.stringify(params)
+              })
+              .then(() => {
+                setDemoLog(prev => [...prev.slice(-6), { step: "▶", x: start.x, y: start.y, z: demoZ, err: "—" }]);
+                patternRef.current.id = setInterval(pollPose, 100);
+              })
+              .catch(() => {
+                setDemoLog(prev => [...prev.slice(-6), { step: "ERR", x: 0, y: 0, z: 0, err: "bridge" }]);
+                setDemoRunning(false);
+              });
+            });
+          }, 600);
+        });
+      }, 800);
+    });
+  };
+
+  const startRandomDemo = () => {
+    setDemoRunning(true);
+    setDemoLog([]);
+    const runStep = (step) => {
+      const target = randomTarget();
+      // Step 1: lift to safe Z first (keep current X/Y, raise Z)
+      const joints = computeFK(servoDeg);
+      const currentEE = joints[joints.length - 1];
+      const safeTarget = {
+        x: Math.round(Math.max(150, currentEE.x)),
+        y: Math.round(currentEE.y),
+        z: Math.max(SAFE_Z, Math.round(currentEE.z))
+      };
+
+      // Go up first, wait, then go to target
+      sendIKTarget(safeTarget).then(() => {
+        // Wait for arm to reach safe height
+        demoRef.current = setTimeout(() => {
+          // Now go to actual target
+          sendIKTarget(target).then(err => {
+            setDemoLog(prev => [...prev.slice(-6), {step, ...target, err: err.toFixed(1)}]);
+            demoRef.current = setTimeout(() => runStep(step + 1), demoSpeed);
+          });
+        }, demoSpeed * 0.6); // 60% of delay for the lift
+      });
+    };
+    runStep(1);
+  };
+
+  const startDemo = () => {
+    if (demoMode === "pattern") startPatternDemo();
+    else startRandomDemo();
+  };
+
+  const stopDemo = () => {
+    setDemoRunning(false);
+    if (demoRef.current) clearTimeout(demoRef.current);
+    if (patternRef.current.id) {
+      clearInterval(patternRef.current.id);
+      patternRef.current.id = null;
+    }
+    patternRef.current.lastServos = null;
+    patternRef.current.busy = false;
+    // Stop the bridge-side pattern thread too.
+    fetch(BRIDGE_URL + "/pattern/stop", { method: "POST" }).catch(() => {});
+  };
+
+  // Cleanup demo on unmount — also tell the bridge to stop its pattern thread.
+  useEffect(() => () => {
+    if (demoRef.current) clearTimeout(demoRef.current);
+    if (patternRef.current.id) clearInterval(patternRef.current.id);
+    fetch(BRIDGE_URL + "/pattern/stop", { method: "POST" }).catch(() => {});
+  }, []);
+
+  // Hot-update bridge pattern params (Z, speed) while it's running.
+  useEffect(() => {
+    if (!demoRunning || demoMode !== "pattern") return;
+    fetch(BRIDGE_URL + "/pattern/start", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ kind: demoPattern, z_mm: demoZ, cycle_ms: cycleMsForPattern() })
+    }).catch(() => {});
+  }, [demoZ, demoSpeed]);
+
+  const runIK = () => {
+    if (connected) {
+      fetch(BRIDGE_URL + "/ik", {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({x: ikTarget.x, y: ikTarget.y, z: ikTarget.z, send: liveMode})
+      })
+      .then(r => r.json())
+      .then(data => {
+        console.log("IK response:", JSON.stringify(data));
+        if (data.ok) {
+          const chToKey = {};
+          SERVO_LIST.forEach(s => { chToKey[String(s.ch)] = s.key; });
+          const newServos = {...servoDeg};
+          Object.keys(data.servos).forEach(ch => {
+            const key = chToKey[ch];
+            console.log("  CH" + ch + " -> key=" + key + " angle=" + data.servos[ch]);
+            if (key) newServos[key] = data.servos[ch];
+          });
+          console.log("New servos:", JSON.stringify(newServos));
+          setServoDeg(newServos);
+          setShowIkTarget(true);
+          setIkError(data.error_mm);
+        }
+      })
+      .catch((err) => {
+        console.error("IK bridge error:", err);
+        runIKLocal();
+      });
+    } else {
+      runIKLocal();
+    }
+  };
+
+  const runIKLocal = () => {
+    const result = solveIK(ikTarget.x, ikTarget.y, ikTarget.z, servoDeg);
+    setServoDeg(result);
+    setShowIkTarget(true);
+    const fk = computeFK(result);
+    const tip = fk[fk.length-1];
+    const err = Math.sqrt((tip.x-ikTarget.x)**2+(tip.y-ikTarget.y)**2+(tip.z-ikTarget.z)**2);
+    setIkError(err);
+    if (liveMode && connected) sendAllServos(result);
+  };
+
+  // ─── VISION FUNCTIONS ───
+  const startCamera = async () => {
+    try {
+      const res = await fetch(BRIDGE_URL + "/camera/start");
+      const data = await res.json();
+      if (data.ok) {
+        setVisionEnabled(true);
+        // Reload calibration
+        fetch(BRIDGE_URL + "/vision/reload").then(r => r.json())
+          .then(v => { setVisionCalib(v); if(v.pick_z) setVisionPickZ(v.pick_z); })
+          .catch(() => {});
+      } else {
+        alert("Cannot start camera on bridge");
+      }
+    } catch (e) {
+      alert("Bridge camera error: " + e.message);
+    }
+  };
+
+  const stopCamera = () => {
+    fetch(BRIDGE_URL + "/camera/stop").catch(() => {});
+    setVisionEnabled(false);
+  };
+
+  const handleVisionClick = (e) => {
+    if (!visionEnabled || !visionCalib?.loaded) return;
+    const img = e.currentTarget.querySelector('img');
+    if (!img) return;
+
+    const rect = img.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    const clickY = e.clientY - rect.top;
+    
+    // Scale to actual video resolution
+    const scaleX = img.naturalWidth / rect.width;
+    const scaleY = img.naturalHeight / rect.height;
+    const px = Math.round(clickX * scaleX);
+    const py = Math.round(clickY * scaleY);
+
+    setVisionLastClick({ screenX: clickX, screenY: clickY, px, py });
+
+    // Send to bridge
+    fetch(BRIDGE_URL + "/vision/click", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ px, py, z: visionPickZ, send: !visionTestMode })
+    })
+    .then(r => r.json())
+    .then(data => {
+      const entry = {
+        px, py,
+        robot: data.robot,
+        error_mm: data.error_mm,
+        ok: data.ok,
+        err_msg: data.error,
+        test: visionTestMode,
+        time: new Date().toLocaleTimeString()
+      };
+      setVisionLog(prev => [...prev.slice(-8), entry]);
+
+      // Update visualizer IK target & servos
+      if (data.ok && data.robot) {
+        setIkTarget({ x: data.robot.x, y: data.robot.y, z: data.robot.z });
+        setShowIkTarget(true);
+        setIkError(data.error_mm);
+        if (data.servos) {
+          const chToKey = {};
+          SERVO_LIST.forEach(s => { chToKey[String(s.ch)] = s.key; });
+          const newServos = { ...servoDeg };
+          Object.keys(data.servos).forEach(ch => {
+            const key = chToKey[ch];
+            if (key) newServos[key] = data.servos[ch];
+          });
+          setServoDeg(newServos);
+        }
+      }
+    })
+    .catch(err => {
+      setVisionLog(prev => [...prev.slice(-8), {
+        px, py, ok: false, err_msg: "Bridge error", test: visionTestMode,
+        time: new Date().toLocaleTimeString()
+      }]);
+    });
+  };
+
+  // Cleanup camera on unmount
+  useEffect(() => () => { fetch(BRIDGE_URL + "/camera/stop").catch(() => {}); }, []);
+
+  // ─── GEMINI FUNCTIONS ───
+  const sendGemini = () => {
+    if (!geminiPrompt.trim() || geminiLoading) return;
+    setGeminiLoading(true);
+    setGeminiObjects([]);
+    setGeminiRaw("");
+
+    fetch(BRIDGE_URL + "/gemini", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt: geminiPrompt,
+        z: visionPickZ,
+        send: geminiAutoMove,
+        auto_pick: geminiAutoMove
+      })
+    })
+    .then(r => r.json())
+    .then(data => {
+      setGeminiLoading(false);
+      if (data.ok) {
+        setGeminiObjects(data.objects || []);
+        setGeminiRaw(data.raw || "");
+        // Update visualizer with first object
+        if (data.objects?.length > 0) {
+          const first = data.objects[0];
+          setIkTarget({ x: first.robot.x, y: first.robot.y, z: first.robot.z });
+          setShowIkTarget(true);
+          if (data.ik) {
+            setIkError(data.ik.error_mm);
+            if (data.ik.servos) {
+              const chToKey = {};
+              SERVO_LIST.forEach(s => { chToKey[String(s.ch)] = s.key; });
+              const newServos = { ...servoDeg };
+              Object.keys(data.ik.servos).forEach(ch => {
+                const key = chToKey[ch];
+                if (key) newServos[key] = data.ik.servos[ch];
+              });
+              setServoDeg(newServos);
+            }
+          }
+        }
+      } else {
+        setGeminiRaw(data.error || "Unknown error");
+      }
+    })
+    .catch(err => {
+      setGeminiLoading(false);
+      setGeminiRaw("Bridge error: " + err.message);
+    });
+  };
+
+  const moveToGeminiObject = (obj) => {
+    fetch(BRIDGE_URL + "/vision/click", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ px: obj.pixel.x, py: obj.pixel.y, z: visionPickZ, send: true })
+    })
+    .then(r => r.json())
+    .then(data => {
+      if (data.ok) {
+        setIkTarget({ x: data.robot.x, y: data.robot.y, z: data.robot.z });
+        setShowIkTarget(true);
+        setIkError(data.error_mm);
+        if (data.servos) {
+          const chToKey = {};
+          SERVO_LIST.forEach(s => { chToKey[String(s.ch)] = s.key; });
+          const newServos = { ...servoDeg };
+          Object.keys(data.servos).forEach(ch => {
+            const key = chToKey[ch];
+            if (key) newServos[key] = data.servos[ch];
+          });
+          setServoDeg(newServos);
+        }
+      }
+    })
+    .catch(() => {});
+  };
+
+  const linkColors = ["#334155","#0ea5e9","#10b981","#f59e0b","#8b5cf6","#7c3aed","#ef4444"];
+  const jointColors = ["#64748b","#0ea5e9","#10b981","#f59e0b","#8b5cf6","#7c3aed","#ef4444"];
+
+  // ─── TTS: Load voices ───
+  useEffect(() => {
+    if (!ttsSupported) return;
+    const loadVoices = () => {
+      const voices = speechSynthesis.getVoices();
+      setAvailableVoices(voices);
+      // Strong Romanian priority
+      const roVoices = voices.filter(v => v.lang.startsWith('ro'));
+      if (roVoices.length > 0) {
+        const ioana = roVoices.find(v => v.name.includes('Ioana'));
+        setTtsVoice(ioana || roVoices[0]);
+      } else {
+        const enVoice = voices.find(v => v.lang.startsWith('en') && v.name.includes('Google'));
+        setTtsVoice(enVoice || voices.find(v => v.lang.startsWith('en')) || voices[0]);
+      }
+    };
+    loadVoices();
+    speechSynthesis.onvoiceschanged = loadVoices;
+  }, [ttsSupported]);
+
+  // ─── TTS: Speak text ───
+  const speakText = useCallback((text) => {
+    if (!ttsSupported || !ttsEnabled || !text) return;
+    speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = 'ro-RO';
+    if (ttsVoice) utterance.voice = ttsVoice;
+    utterance.rate = 1.05;
+    utterance.pitch = 1.0;
+    speechSynthesis.speak(utterance);
+  }, [ttsSupported, ttsEnabled, ttsVoice]);
+
+  // ─── STT: Setup recognition ───
+  useEffect(() => {
+    if (!sttSupported) return;
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'ro-RO';
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.maxAlternatives = 1;
+
+    recognition.onresult = (event) => {
+      const transcript = Array.from(event.results)
+        .map(r => r[0].transcript)
+        .join('');
+      setAgentInput(transcript);
+      if (event.results[0].isFinal) {
+        setIsListening(false);
+      }
+    };
+    recognition.onerror = (event) => {
+      console.log('STT error:', event.error);
+      setIsListening(false);
+    };
+    recognition.onend = () => setIsListening(false);
+    recognitionRef.current = recognition;
+  }, [sttSupported]);
+
+  const toggleListening = useCallback(() => {
+    if (!recognitionRef.current) return;
+    if (isListening) {
+      recognitionRef.current.stop();
+      setIsListening(false);
+    } else {
+      speechSynthesis.cancel();
+      setAgentInput('');
+      recognitionRef.current.start();
+      setIsListening(true);
+    }
+  }, [isListening]);
+
+  // Auto-scroll agent log
+  useEffect(() => {
+    if (agentLogRef.current) {
+      agentLogRef.current.scrollTop = agentLogRef.current.scrollHeight;
+    }
+  }, [agentMessages]);
+
+  // ─── Agent: Send message via SSE ───
+  const sendAgentMessage = useCallback(() => {
+    const msg = agentInput.trim();
+    if (!msg || agentLoading) return;
+    setAgentInput('');
+    setAgentLoading(true);
+    speechSynthesis.cancel();
+
+    const userMsg = { role: 'user', text: msg, time: new Date().toLocaleTimeString() };
+    setAgentMessages(prev => [...prev, userMsg]);
+
+    fetch(BRIDGE_URL + "/agent/chat", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ message: msg, history: agentHistory })
+    }).then(response => {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      const processStream = () => {
+        reader.read().then(({done, value}) => {
+          if (done) {
+            setAgentLoading(false);
+            return;
+          }
+          buffer += decoder.decode(value, {stream: true});
+          
+          // Parse SSE events
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          
+          let currentEvent = '';
+          for (const line of lines) {
+            if (line.startsWith('event: ')) {
+              currentEvent = line.slice(7);
+            } else if (line.startsWith('data: ')) {
+              try {
+                const payload = JSON.parse(line.slice(6));
+                
+                if (currentEvent === 'thinking') {
+                  setAgentMessages(prev => [...prev, {
+                    role: 'thinking', text: payload.text,
+                    time: new Date().toLocaleTimeString()
+                  }]);
+                } else if (currentEvent === 'action') {
+                  setAgentMessages(prev => [...prev, {
+                    role: 'action', name: payload.name, args: payload.args,
+                    time: new Date().toLocaleTimeString()
+                  }]);
+                } else if (currentEvent === 'action_result') {
+                  setAgentMessages(prev => [...prev, {
+                    role: 'action_result', name: payload.name, result: payload.result,
+                    time: new Date().toLocaleTimeString()
+                  }]);
+                } else if (currentEvent === 'response') {
+                  setAgentMessages(prev => [...prev, {
+                    role: 'iris', text: payload.text,
+                    time: new Date().toLocaleTimeString()
+                  }]);
+                  if (payload.history) setAgentHistory(payload.history);
+                  speakText(payload.text);
+                } else if (currentEvent === 'error') {
+                  setAgentMessages(prev => [...prev, {
+                    role: 'error', text: payload.text,
+                    time: new Date().toLocaleTimeString()
+                  }]);
+                } else if (currentEvent === 'done') {
+                  setAgentLoading(false);
+                }
+              } catch(e) {}
+              currentEvent = '';
+            }
+          }
+          processStream();
+        });
+      };
+      processStream();
+    }).catch(err => {
+      setAgentMessages(prev => [...prev, {
+        role: 'error', text: 'Bridge error: ' + err.message,
+        time: new Date().toLocaleTimeString()
+      }]);
+      setAgentLoading(false);
+    });
+  }, [agentInput, agentLoading, agentHistory, speakText]);
+
+  return (
+    <div style={{display:"flex",gap:16,padding:16,minHeight:"100vh",background:"#080c14",flexWrap:"wrap"}}>
+      
+      {/* ─── 3D VIEWPORT ─── */}
+      <div style={{flex:"1 1 500px",minWidth:400}}>
+        <div style={{background:"#0d1117",borderRadius:16,border:"1px solid #1b2838",overflow:"hidden",boxShadow:"0 0 60px rgba(14,165,233,0.05)"}}>
+          <div style={{padding:"14px 20px",borderBottom:"1px solid #1b2838",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <div>
+              <span style={{fontFamily:"Outfit",fontSize:18,fontWeight:800,color:"#0ea5e9",letterSpacing:2}}>IRIS</span>
+              <span style={{fontSize:11,color:"#3b5068",marginLeft:10}}>6-DOF ROBOT ARM</span>
+            </div>
+            <span style={{fontSize:10,color:"#2a3f55"}}>DRAG TO ORBIT • SCROLL TO ZOOM</span>
+          </div>
+          
+          <svg
+            width={W} height={H}
+            viewBox={`0 0 ${W} ${H}`}
+            style={{width:"100%",height:"auto",cursor:dragging?"grabbing":"grab",display:"block"}}
+            onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp}
+            onTouchStart={onDown} onTouchMove={onMove} onTouchEnd={onUp}
+            onWheel={onWheel}
+          >
+            <defs>
+              <radialGradient id="bg" cx="50%" cy="60%">
+                <stop offset="0%" stopColor="#111927"/>
+                <stop offset="100%" stopColor="#080c14"/>
+              </radialGradient>
+              <filter id="glow">
+                <feGaussianBlur stdDeviation="3" result="blur"/>
+                <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+              </filter>
+              <filter id="glow2">
+                <feGaussianBlur stdDeviation="6" result="blur"/>
+                <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+              </filter>
+            </defs>
+
+            <rect width={W} height={H} fill="url(#bg)"/>
+
+            {/* Grid */}
+            {gridLines.map((l,i) => (
+              <line key={i} x1={l.x1} y1={l.y1} x2={l.x2} y2={l.y2} stroke="#111927" strokeWidth={0.5}/>
+            ))}
+
+            {/* Axes */}
+            <line x1={o.px} y1={o.py} x2={axX.px} y2={axX.py} stroke="#ef4444" strokeWidth={1.5} opacity={0.7}/>
+            <text x={axX.px+4} y={axX.py-2} fill="#ef4444" fontSize={10} fontWeight={700} opacity={0.7}>X</text>
+            <line x1={o.px} y1={o.py} x2={axY.px} y2={axY.py} stroke="#22c55e" strokeWidth={1.5} opacity={0.7}/>
+            <text x={axY.px+4} y={axY.py-2} fill="#22c55e" fontSize={10} fontWeight={700} opacity={0.7}>Y</text>
+            <line x1={o.px} y1={o.py} x2={axZ.px} y2={axZ.py} stroke="#3b82f6" strokeWidth={1.5} opacity={0.7}/>
+            <text x={axZ.px+4} y={axZ.py-2} fill="#3b82f6" fontSize={10} fontWeight={700} opacity={0.7}>Z</text>
+
+            {/* Shadow on ground plane */}
+            {pts.slice(0,-1).map((p,i) => {
+              const j1 = joints[i], j2 = joints[i+1];
+              const s1 = project(j1.x,j1.y,0,camH,camV,zoom,CX,CY);
+              const s2 = project(j2.x,j2.y,0,camH,camV,zoom,CX,CY);
+              return <line key={`sh-${i}`} x1={s1.px} y1={s1.py} x2={s2.px} y2={s2.py} stroke="#0ea5e9" strokeWidth={1} opacity={0.08}/>;
+            })}
+
+            {/* Links */}
+            {pts.slice(0,-1).map((p,i) => {
+              const next = pts[i+1];
+              const thick = Math.max(2.5, 9 - i*1.2);
+              return (
+                <g key={`link-${i}`}>
+                  <line x1={p.px} y1={p.py} x2={next.px} y2={next.py}
+                    stroke={linkColors[i]} strokeWidth={thick+2} strokeLinecap="round" opacity={0.3}/>
+                  <line x1={p.px} y1={p.py} x2={next.px} y2={next.py}
+                    stroke={linkColors[i]} strokeWidth={thick} strokeLinecap="round" opacity={0.9}
+                    filter="url(#glow)"/>
+                </g>
+              );
+            })}
+
+            {/* Joints */}
+            {pts.map((p,i) => {
+              const r = i===pts.length-1 ? 5 : Math.max(3.5, 8 - i*0.8);
+              return (
+                <g key={`j-${i}`}>
+                  <circle cx={p.px} cy={p.py} r={r+2} fill={jointColors[i]} opacity={0.15} filter="url(#glow2)"/>
+                  <circle cx={p.px} cy={p.py} r={r} fill={jointColors[i]} stroke="#080c14" strokeWidth={1.5}/>
+                  <text x={p.px+r+6} y={p.py-r-2} fill="#3b5068" fontSize={8.5} fontWeight={500}>{joints[i].label}</text>
+                </g>
+              );
+            })}
+
+            {/* EE crosshair */}
+            {(() => {
+              const ep = pts[pts.length-1];
+              return (
+                <g filter="url(#glow)">
+                  <circle cx={ep.px} cy={ep.py} r={14} fill="none" stroke="#ef4444" strokeWidth={1} strokeDasharray="4,3" opacity={0.6}/>
+                  <line x1={ep.px-18} y1={ep.py} x2={ep.px+18} y2={ep.py} stroke="#ef4444" strokeWidth={0.6} opacity={0.5}/>
+                  <line x1={ep.px} y1={ep.py-18} x2={ep.px} y2={ep.py+18} stroke="#ef4444" strokeWidth={0.6} opacity={0.5}/>
+                </g>
+              );
+            })()}
+
+            {/* IK target marker */}
+            {ikPt && (
+              <g>
+                <circle cx={ikPt.px} cy={ikPt.py} r={8} fill="none" stroke="#fbbf24" strokeWidth={2} strokeDasharray="3,2"/>
+                <circle cx={ikPt.px} cy={ikPt.py} r={3} fill="#fbbf24"/>
+                <text x={ikPt.px+12} y={ikPt.py+4} fill="#fbbf24" fontSize={9} fontWeight={600}>TARGET</text>
+              </g>
+            )}
+
+            {/* Info bar */}
+            <text x={16} y={H-14} fill="#2a3f55" fontSize={10} fontFamily="IBM Plex Mono">
+              EE: ({ee.x.toFixed(1)}, {ee.y.toFixed(1)}, {ee.z.toFixed(1)}) mm   |   Reach: {Math.sqrt(ee.x**2+ee.y**2+ee.z**2).toFixed(1)} mm
+            </text>
+          </svg>
+        </div>
+
+        {/* ─── VISION CAMERA FEED (under 3D viewport) ─── */}
+        <div style={{background:"#0d1117",borderRadius:16,border:`1px solid ${visionEnabled?"#06b6d4":"#1b2838"}`,overflow:"hidden",marginTop:12,transition:"border-color 0.3s"}}>
+          <div style={{padding:"10px 16px",borderBottom:"1px solid #1b2838",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <div style={{display:"flex",alignItems:"center",gap:10}}>
+              <span style={{fontFamily:"Outfit",fontSize:16,fontWeight:800,color:"#06b6d4",letterSpacing:2}}>VISION PICK</span>
+              {visionCalib?.loaded && (
+                <span style={{fontSize:9,color:"#10b981",background:"#0d2818",padding:"2px 8px",borderRadius:4,fontWeight:600}}>
+                  CAL ✓ {visionCalib.method || "vision"} • {visionCalib.avg_error?.toFixed(1)}mm • {visionCalib.num_points}pts
+                </span>
+              )}
+              {visionCalib && !visionCalib.loaded && (
+                <span style={{fontSize:9,color:"#f59e0b",background:"#2d1f05",padding:"2px 8px",borderRadius:4}}>
+                  NOT CALIBRATED
+                </span>
+              )}
+            </div>
+            <div style={{display:"flex",gap:8,alignItems:"center"}}>
+              {visionEnabled && (
+                <>
+                  <button onClick={()=>setVisionTestMode(t=>!t)} style={{
+                    background:visionTestMode?"#f59e0b":"#10b981",
+                    border:"none",color:"#080c14",borderRadius:6,
+                    padding:"5px 12px",fontSize:10,cursor:"pointer",
+                    fontFamily:"Outfit",fontWeight:700
+                  }}>
+                    {visionTestMode ? "⚡ TEST" : "● LIVE"}
+                  </button>
+                  <div style={{display:"flex",alignItems:"center",gap:3}}>
+                    <span style={{fontSize:9,color:"#3b5068"}}>Z</span>
+                    <button onClick={()=>setVisionPickZ(z=>Math.max(10,z-10))} style={{
+                      background:"#1b2838",border:"none",color:"#c8d6e5",borderRadius:4,
+                      width:22,height:22,fontSize:13,cursor:"pointer",fontFamily:"IBM Plex Mono"
+                    }}>−</button>
+                    <span style={{fontSize:12,color:"#c8d6e5",fontWeight:600,width:32,textAlign:"center"}}>{visionPickZ}</span>
+                    <button onClick={()=>setVisionPickZ(z=>z+10)} style={{
+                      background:"#1b2838",border:"none",color:"#c8d6e5",borderRadius:4,
+                      width:22,height:22,fontSize:13,cursor:"pointer",fontFamily:"IBM Plex Mono"
+                    }}>+</button>
+                  </div>
+                </>
+              )}
+              <button onClick={visionEnabled ? stopCamera : startCamera}
+                disabled={!connected}
+                style={{
+                  background:visionEnabled?"#164e63":"linear-gradient(135deg,#06b6d4,#0891b2)",
+                  border:"none",color:visionEnabled?"#06b6d4":"#080c14",borderRadius:8,
+                  padding:"5px 14px",fontSize:10,cursor:connected?"pointer":"not-allowed",
+                  fontFamily:"Outfit",fontWeight:700,letterSpacing:0.5
+                }}>
+                {visionEnabled ? "■ STOP" : "▶ CAMERA"}
+              </button>
+            </div>
+          </div>
+
+          {visionEnabled ? (
+            <div style={{position:"relative"}}>
+              <div style={{position:"relative",cursor:"crosshair",background:"#000"}} onClick={handleVisionClick}>
+                <img src={BRIDGE_URL + "/video_feed"}
+                  style={{width:"100%",display:"block"}}
+                  alt="Camera feed"/>
+                
+                {/* Click crosshair overlay */}
+                {visionLastClick && (
+                  <svg style={{position:"absolute",top:0,left:0,width:"100%",height:"100%",pointerEvents:"none"}}>
+                    <circle cx={visionLastClick.screenX} cy={visionLastClick.screenY} r={16}
+                      fill="none" stroke="#fbbf24" strokeWidth={2} strokeDasharray="4,3"/>
+                    <line x1={visionLastClick.screenX-22} y1={visionLastClick.screenY}
+                      x2={visionLastClick.screenX+22} y2={visionLastClick.screenY}
+                      stroke="#fbbf24" strokeWidth={1}/>
+                    <line x1={visionLastClick.screenX} y1={visionLastClick.screenY-22}
+                      x2={visionLastClick.screenX} y2={visionLastClick.screenY+22}
+                      stroke="#fbbf24" strokeWidth={1}/>
+                  </svg>
+                )}
+              </div>
+              
+              {/* Vision log bar */}
+              {visionLog.length > 0 && (
+                <div style={{padding:"6px 12px",background:"#111927",maxHeight:80,overflowY:"auto",borderTop:"1px solid #1b2838"}}>
+                  {visionLog.slice(-4).map((log, i) => (
+                    <div key={i} style={{fontSize:10,color:"#3b5068",fontFamily:"IBM Plex Mono",lineHeight:1.7,display:"flex",justifyContent:"space-between"}}>
+                      <span>
+                        <span style={{color:log.test?"#f59e0b":"#06b6d4",fontWeight:700}}>{log.test?"T":"●"}</span>
+                        {" "}px({log.px},{log.py})
+                        {log.robot && <span style={{color:"#c8d6e5"}}> → ({log.robot.x}, {log.robot.y}, {log.robot.z})</span>}
+                      </span>
+                      <span style={{color:log.ok?(log.error_mm<5?"#10b981":"#f59e0b"):"#ef4444",fontWeight:600}}>
+                        {log.ok ? log.error_mm?.toFixed(1)+"mm" : log.err_msg || "ERR"}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div style={{padding:"30px 16px",textAlign:"center"}}>
+              {connected ? (
+                <div>
+                  <div style={{fontSize:11,color:"#3b5068",marginBottom:6}}>Click ▶ CAMERA to start vision pick</div>
+                  {!visionCalib?.loaded && (
+                    <div style={{fontSize:10,color:"#f59e0b"}}>⚠ Run iris_vision_v3.py or iris_vision.py to calibrate first</div>
+                  )}
+                </div>
+              ) : (
+                <div style={{fontSize:11,color:"#2a3f55"}}>Bridge required for vision</div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* ─── GEMINI ROBOTICS ER PANEL ─── */}
+        <div style={{background:"#0d1117",borderRadius:16,border:"1px solid #1b2838",overflow:"hidden",marginTop:12}}>
+          <div style={{padding:"10px 16px",borderBottom:"1px solid #1b2838",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <span style={{fontFamily:"Outfit",fontSize:16,fontWeight:800,color:"#a855f7",letterSpacing:2}}>GEMINI ER</span>
+              <span style={{fontSize:9,color:"#3b5068"}}>Robotics 1.6</span>
+            </div>
+            <button onClick={()=>setGeminiAutoMove(a=>!a)} style={{
+              background:geminiAutoMove?"#10b981":"#1b2838",
+              border:"none",color:geminiAutoMove?"#080c14":"#3b5068",borderRadius:6,
+              padding:"4px 10px",fontSize:10,cursor:"pointer",
+              fontFamily:"Outfit",fontWeight:700
+            }}>
+              {geminiAutoMove ? "● AUTO MOVE" : "○ DETECT ONLY"}
+            </button>
+          </div>
+
+          <div style={{padding:"12px 16px"}}>
+            {/* Prompt input */}
+            <div style={{display:"flex",gap:8}}>
+              <input type="text" value={geminiPrompt}
+                onChange={e => setGeminiPrompt(e.target.value)}
+                onKeyDown={e => { if(e.key === "Enter") sendGemini(); }}
+                placeholder="e.g. find the red pen..."
+                disabled={!visionEnabled}
+                style={{
+                  flex:1,background:"#111927",border:"1px solid #1b2838",color:"#c8d6e5",
+                  borderRadius:8,padding:"8px 12px",fontSize:12,fontFamily:"IBM Plex Mono",
+                  outline:"none"
+                }}/>
+              <button onClick={sendGemini}
+                disabled={!visionEnabled || geminiLoading || !geminiPrompt.trim()}
+                style={{
+                  background:geminiLoading?"#1b2838":"linear-gradient(135deg,#a855f7,#7c3aed)",
+                  border:"none",color:geminiLoading?"#3b5068":"#fff",borderRadius:8,
+                  padding:"8px 16px",fontSize:11,cursor:visionEnabled?"pointer":"not-allowed",
+                  fontFamily:"Outfit",fontWeight:700,letterSpacing:0.5,minWidth:60
+                }}>
+                {geminiLoading ? "..." : "ASK"}
+              </button>
+            </div>
+
+            {!visionEnabled && (
+              <div style={{fontSize:10,color:"#f59e0b",marginTop:6}}>Start camera first</div>
+            )}
+
+            {/* Detected objects */}
+            {geminiObjects.length > 0 && (
+              <div style={{marginTop:10}}>
+                <div style={{fontSize:10,color:"#a855f7",fontWeight:700,marginBottom:6}}>
+                  DETECTED ({geminiObjects.length})
+                </div>
+                <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+                  {geminiObjects.map((obj, i) => (
+                    <button key={i} onClick={() => moveToGeminiObject(obj)}
+                      style={{
+                        background:"#111927",border:"1px solid #a855f7",color:"#c8d6e5",
+                        borderRadius:8,padding:"6px 12px",fontSize:11,cursor:"pointer",
+                        fontFamily:"IBM Plex Mono",transition:"all 0.2s",
+                        display:"flex",flexDirection:"column",alignItems:"flex-start",gap:2
+                      }}
+                      onMouseEnter={e=>{e.currentTarget.style.background="#a855f7";e.currentTarget.style.color="#080c14"}}
+                      onMouseLeave={e=>{e.currentTarget.style.background="#111927";e.currentTarget.style.color="#c8d6e5"}}
+                    >
+                      <span style={{fontWeight:700}}>{obj.label}</span>
+                      <span style={{fontSize:9,opacity:0.7}}>
+                        ({obj.robot.x}, {obj.robot.y})mm
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Raw response */}
+            {geminiRaw && !geminiObjects.length && (
+              <div style={{marginTop:8,background:"#111927",borderRadius:8,padding:8,fontSize:10,
+                color:"#3b5068",fontFamily:"IBM Plex Mono",maxHeight:60,overflowY:"auto",whiteSpace:"pre-wrap"}}>
+                {geminiRaw}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* ─── IRIS AGENT PANEL (Voice Chat) ─── */}
+        <div style={{background:"#0d1117",borderRadius:16,border:`1px solid ${agentLoading?"#f97316":"#1b2838"}`,overflow:"hidden",marginTop:12,transition:"border-color 0.3s"}}>
+          <div style={{padding:"10px 16px",borderBottom:"1px solid #1b2838",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <span style={{fontFamily:"Outfit",fontSize:16,fontWeight:800,color:"#f97316",letterSpacing:2}}>IRIS AGENT</span>
+              <span style={{fontSize:9,color:agentLoading?"#f97316":"#3b5068",fontWeight:agentLoading?700:400}}>
+                {agentLoading ? "● THINKING..." : "voice + chat"}
+              </span>
+            </div>
+            <div style={{display:"flex",gap:4,alignItems:"center"}}>
+              {/* TTS Toggle */}
+              {ttsSupported && (
+                <button onClick={()=>{setTtsEnabled(t=>!t); if(ttsEnabled) speechSynthesis.cancel();}} style={{
+                  background:ttsEnabled?"#f97316":"#1b2838",
+                  border:"none",color:ttsEnabled?"#080c14":"#3b5068",borderRadius:6,
+                  padding:"3px 8px",fontSize:10,cursor:"pointer",
+                  fontFamily:"Outfit",fontWeight:700
+                }}>
+                  {ttsEnabled ? "🔊" : "🔇"}
+                </button>
+              )}
+              {/* Voice selector */}
+              {ttsSupported && availableVoices.length > 0 && (
+                <select
+                  value={ttsVoice?.name || ''}
+                  onChange={e => setTtsVoice(availableVoices.find(v => v.name === e.target.value))}
+                  style={{
+                    background:"#111927",border:"1px solid #1b2838",color:"#3b5068",
+                    borderRadius:4,padding:"2px 4px",fontSize:8,fontFamily:"IBM Plex Mono",
+                    maxWidth:90,outline:"none"
+                  }}>
+                  {availableVoices.filter(v => v.lang.startsWith('ro') || v.lang.startsWith('en')).slice(0, 12).map(v => (
+                    <option key={v.name} value={v.name}>{v.name.replace(/^(Microsoft |Google )/,'').slice(0,18)}</option>
+                  ))}
+                </select>
+              )}
+              {/* Clear chat */}
+              <button onClick={()=>{setAgentMessages([]);setAgentHistory([]);}} style={{
+                background:"#1b2838",border:"none",color:"#3b5068",borderRadius:6,
+                padding:"3px 8px",fontSize:9,cursor:"pointer",fontFamily:"IBM Plex Mono"
+              }}>CLR</button>
+            </div>
+          </div>
+
+          {/* Chat messages */}
+          <div ref={agentLogRef} style={{
+            padding:"8px 12px",maxHeight:280,overflowY:"auto",minHeight:80,
+            display:"flex",flexDirection:"column",gap:6
+          }}>
+            {agentMessages.length === 0 && (
+              <div style={{textAlign:"center",padding:"20px 0",color:"#2a3f55",fontSize:11}}>
+                {sttSupported ? "Apasă 🎤 și vorbește sau scrie un mesaj" : "Scrie un mesaj pentru IRIS"}
+              </div>
+            )}
+            {agentMessages.map((msg, i) => {
+              if (msg.role === 'user') {
+                return (
+                  <div key={i} style={{alignSelf:"flex-end",maxWidth:"85%"}}>
+                    <div style={{background:"#1e3a5f",borderRadius:"12px 12px 4px 12px",padding:"8px 12px",
+                      fontSize:12,color:"#c8d6e5",fontFamily:"IBM Plex Mono"}}>
+                      {msg.text}
+                    </div>
+                    <div style={{fontSize:8,color:"#2a3f55",textAlign:"right",marginTop:2}}>{msg.time}</div>
+                  </div>
+                );
+              }
+              if (msg.role === 'iris') {
+                return (
+                  <div key={i} style={{alignSelf:"flex-start",maxWidth:"85%"}}>
+                    <div style={{background:"linear-gradient(135deg,#1a0f00,#2d1800)",border:"1px solid #3d2200",
+                      borderRadius:"12px 12px 12px 4px",padding:"8px 12px",
+                      fontSize:12,color:"#fbbf24",fontFamily:"IBM Plex Mono"}}>
+                      <span style={{fontSize:9,fontWeight:700,color:"#f97316",display:"block",marginBottom:3}}>IRIS</span>
+                      {msg.text}
+                    </div>
+                    <div style={{fontSize:8,color:"#2a3f55",marginTop:2}}>{msg.time}</div>
+                  </div>
+                );
+              }
+              if (msg.role === 'thinking') {
+                return (
+                  <div key={i} style={{fontSize:10,color:"#f97316",fontStyle:"italic",padding:"2px 8px",
+                    borderLeft:"2px solid #f97316",background:"#1a0f00",borderRadius:4}}>
+                    💭 {msg.text}
+                  </div>
+                );
+              }
+              if (msg.role === 'action') {
+                return (
+                  <div key={i} style={{fontSize:10,fontFamily:"IBM Plex Mono",padding:"4px 8px",
+                    background:"#0d1a0d",borderLeft:"2px solid #10b981",borderRadius:4}}>
+                    <span style={{color:"#10b981",fontWeight:700}}>⚡ {msg.name}</span>
+                    <span style={{color:"#3b5068"}}>(</span>
+                    <span style={{color:"#c8d6e5",fontSize:9}}>{JSON.stringify(msg.args)}</span>
+                    <span style={{color:"#3b5068"}}>)</span>
+                  </div>
+                );
+              }
+              if (msg.role === 'action_result') {
+                const ok = msg.result?.success !== false;
+                return (
+                  <div key={i} style={{fontSize:9,fontFamily:"IBM Plex Mono",padding:"3px 8px",
+                    color:ok?"#10b981":"#ef4444",borderLeft:`2px solid ${ok?"#10b981":"#ef4444"}`,
+                    background:ok?"#0a1a0a":"#1a0a0a",borderRadius:4}}>
+                    {ok ? "✓" : "✗"} {msg.name}: {JSON.stringify(msg.result).slice(0, 100)}
+                  </div>
+                );
+              }
+              if (msg.role === 'error') {
+                return (
+                  <div key={i} style={{fontSize:10,color:"#ef4444",padding:"4px 8px",
+                    background:"#1a0a0a",borderRadius:4,borderLeft:"2px solid #ef4444"}}>
+                    ❌ {msg.text}
+                  </div>
+                );
+              }
+              return null;
+            })}
+            {agentLoading && (
+              <div style={{fontSize:11,color:"#f97316",padding:"4px 0"}}>
+                <span style={{animation:"pulse 1s infinite"}}>●</span> IRIS gândește...
+              </div>
+            )}
+          </div>
+
+          {/* Input bar with mic button */}
+          <div style={{padding:"8px 12px",borderTop:"1px solid #1b2838",display:"flex",gap:6,alignItems:"center"}}>
+            {/* Microphone button */}
+            {sttSupported && (
+              <button onClick={toggleListening} 
+                disabled={agentLoading}
+                style={{
+                  width:38,height:38,borderRadius:"50%",border:"none",cursor:agentLoading?"not-allowed":"pointer",
+                  background:isListening?"#ef4444":"linear-gradient(135deg,#f97316,#ea580c)",
+                  color:"#fff",fontSize:16,display:"flex",alignItems:"center",justifyContent:"center",
+                  boxShadow:isListening?"0 0 16px rgba(239,68,68,0.5)":"0 0 8px rgba(249,115,22,0.3)",
+                  transition:"all 0.2s",flexShrink:0,
+                  animation:isListening?"pulse 1s infinite":"none"
+                }}>
+                {isListening ? "⏹" : "🎤"}
+              </button>
+            )}
+            <input type="text" value={agentInput}
+              onChange={e => setAgentInput(e.target.value)}
+              onKeyDown={e => { if(e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendAgentMessage(); }}}
+              placeholder={isListening ? "Ascult..." : "Vorbește cu IRIS..."}
+              disabled={agentLoading}
+              style={{
+                flex:1,background:"#111927",border:`1px solid ${isListening?"#f97316":"#1b2838"}`,
+                color:"#c8d6e5",borderRadius:10,padding:"9px 14px",fontSize:12,
+                fontFamily:"IBM Plex Mono",outline:"none",transition:"border-color 0.3s"
+              }}/>
+            <button onClick={sendAgentMessage}
+              disabled={agentLoading || !agentInput.trim()}
+              style={{
+                background:agentLoading?"#1b2838":(agentInput.trim()?"linear-gradient(135deg,#f97316,#ea580c)":"#1b2838"),
+                border:"none",color:agentInput.trim()?"#fff":"#3b5068",borderRadius:10,
+                padding:"9px 16px",fontSize:11,cursor:agentLoading?"not-allowed":"pointer",
+                fontFamily:"Outfit",fontWeight:700,letterSpacing:0.5,flexShrink:0,
+                transition:"all 0.2s"
+              }}>
+              {agentLoading ? "..." : "SEND"}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* ─── CONTROLS PANEL ─── */}
+      <div style={{flex:"0 0 310px",display:"flex",flexDirection:"column",gap:12,maxHeight:"100vh",overflowY:"auto"}}>
+        
+        {/* ESP32 Connection */}
+        <div style={{background:"#0d1117",borderRadius:16,border:`1px solid ${connected?"#10b981":"#1b2838"}`,padding:14,transition:"border-color 0.3s"}}>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+            <div style={{width:10,height:10,borderRadius:"50%",background:connected?"#10b981":"#ef4444",boxShadow:connected?"0 0 8px #10b981":"0 0 8px #ef4444"}}/>
+            <span style={{fontFamily:"Outfit",fontSize:13,fontWeight:700,color:connected?"#10b981":"#ef4444",letterSpacing:1}}>
+              {connected ? "ESP32 CONNECTED" : "ESP32 OFFLINE"}
+            </span>
+          </div>
+          {connected && (
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={()=>setLiveMode(l=>!l)} style={{
+                flex:1,background:liveMode?"#10b981":"#1b2838",border:"1px solid "+(liveMode?"#10b981":"#2a3f55"),
+                color:liveMode?"#080c14":"#3b5068",borderRadius:8,padding:"8px 10px",fontSize:11,
+                cursor:"pointer",fontFamily:"Outfit",fontWeight:700,letterSpacing:0.5,transition:"all 0.2s"
+              }}>
+                {liveMode ? "● LIVE" : "○ LIVE OFF"}
+              </button>
+              <button onClick={pushToRobot} style={{
+                flex:1,background:"#1b2838",border:"1px solid #2a3f55",color:"#0ea5e9",borderRadius:8,
+                padding:"8px 10px",fontSize:11,cursor:"pointer",fontFamily:"Outfit",fontWeight:700,
+                letterSpacing:0.5,transition:"all 0.2s"
+              }}
+              onMouseEnter={e=>{e.target.style.background="#0ea5e9";e.target.style.color="#080c14"}}
+              onMouseLeave={e=>{e.target.style.background="#1b2838";e.target.style.color="#0ea5e9"}}
+              >PUSH ALL</button>
+            </div>
+          )}
+          {!connected && (
+            <div style={{fontSize:10,color:"#2a3f55",lineHeight:1.5}}>
+              Run: <span style={{color:"#3b5068"}}>python3 iris_bridge.py</span>
+            </div>
+          )}
+        </div>
+
+        {/* Servo Sliders */}
+        <div style={{background:"#0d1117",borderRadius:16,border:"1px solid #1b2838",padding:18}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+            <span style={{fontFamily:"Outfit",fontSize:14,fontWeight:700,color:"#0ea5e9",letterSpacing:1}}>SERVO CONTROL</span>
+            <button onClick={resetHome} style={{
+              background:"#1b2838",border:"1px solid #2a3f55",color:"#3b5068",borderRadius:6,
+              padding:"5px 12px",fontSize:10,cursor:"pointer",fontFamily:"IBM Plex Mono",fontWeight:600,
+              transition:"all 0.2s"
+            }}
+            onMouseEnter={e=>{e.target.style.background="#2a3f55";e.target.style.color="#c8d6e5"}}
+            onMouseLeave={e=>{e.target.style.background="#1b2838";e.target.style.color="#3b5068"}}
+            >HOME</button>
+          </div>
+
+          {/* Connection + Live controls */}
+          <div style={{display:"flex",gap:8,marginBottom:14,alignItems:"center"}}>
+            <div style={{width:8,height:8,borderRadius:"50%",background:connected?"#10b981":"#ef4444",boxShadow:connected?"0 0 6px #10b981":"0 0 6px #ef4444",flexShrink:0}}/>
+            <span style={{fontSize:10,color:connected?"#10b981":"#ef4444",flexShrink:0}}>
+              {connected?"SERIAL OK":"OFFLINE"}
+            </span>
+            <div style={{flex:1}}/>
+            <button onClick={()=>setLiveMode(l=>!l)} style={{
+              background:liveMode?"#10b981":"#1b2838",border:"1px solid "+(liveMode?"#10b981":"#2a3f55"),
+              color:liveMode?"#080c14":"#3b5068",borderRadius:6,padding:"4px 10px",fontSize:10,
+              cursor:"pointer",fontFamily:"IBM Plex Mono",fontWeight:700,transition:"all 0.2s"
+            }}>
+              {liveMode ? "● LIVE" : "○ LIVE"}
+            </button>
+            <button onClick={pushToRobot} style={{
+              background:"#1b2838",border:"1px solid #2a3f55",color:"#0ea5e9",borderRadius:6,
+              padding:"4px 10px",fontSize:10,cursor:"pointer",fontFamily:"IBM Plex Mono",fontWeight:700,
+              transition:"all 0.2s"
+            }}>PUSH</button>
+          </div>
+
+          {/* Speed control */}
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14,padding:"6px 0"}}>
+            <span style={{fontSize:9,color:"#2a3f55",flexShrink:0}}>🐢</span>
+            <input type="range" min={1} max={10} defaultValue={1} style={{flex:1,accentColor:"#f59e0b",height:3}}
+              onChange={e => {
+                fetch(BRIDGE_URL + "/speed?step=" + e.target.value + "&delay=15").catch(()=>{});
+              }}/>
+            <span style={{fontSize:9,color:"#2a3f55",flexShrink:0}}>🐇</span>
+            <span style={{fontSize:9,color:"#3b5068",width:50,textAlign:"right"}}>SPEED</span>
+          </div>
+
+          {SERVO_LIST.filter(s => !s.isGripper).map(s => (
+            <div key={s.key} style={{marginBottom:12}}>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:11,marginBottom:3}}>
+                <span style={{color:"#3b5068"}}>
+                  <span style={{color:s.color,fontWeight:700}}>CH{s.ch}</span> {s.label}
+                </span>
+                <span style={{color:"#c8d6e5",fontWeight:600,fontSize:13}}>{servoDeg[s.key]}°</span>
+              </div>
+              <input type="range" min={s.min} max={s.max} value={servoDeg[s.key]}
+                onChange={e => handleServo(s.key, e.target.value)}
+                style={{width:"100%",accentColor:s.color,height:4}}/>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:8,color:"#1b2838",marginTop:1}}>
+                <span>{s.min}°</span>
+                <span style={{color:"#2a3f55"}}>offset {s.offset}°</span>
+                <span>{s.max}°</span>
+              </div>
+            </div>
+          ))}
+
+          {/* CH0 Gripper — OPEN/CLOSE toggle only */}
+          <div style={{background:"#111927",borderRadius:8,padding:"10px 12px",marginTop:4,marginBottom:12}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span style={{fontSize:11,color:"#3b5068"}}>
+                <span style={{color:"#ef4444",fontWeight:700}}>CH0</span> Gripper
+              </span>
+              <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                <button onClick={toggleGripper} style={{
+                  background: gripperOpen ? "#10b981" : "#ef4444",
+                  border:"none", borderRadius:6, padding:"5px 16px",
+                  color:"#080c14", fontSize:11, fontWeight:700,
+                  cursor:"pointer", fontFamily:"IBM Plex Mono",
+                  letterSpacing:1, transition:"all 0.15s"
+                }}>
+                  {gripperOpen ? "✋ OPEN" : "✊ CLOSED"}
+                </button>
+                <span style={{color:"#c8d6e5",fontWeight:600,fontSize:13,minWidth:30,textAlign:"right"}}>
+                  {gripperOpen ? "0°" : "70°"}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* CH5 Shoulder B */}
+          <div style={{background:"#111927",borderRadius:8,padding:"10px 12px",marginTop:4}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+              <span style={{fontSize:11,color:"#3b5068"}}>
+                <span style={{color:"#0ea5e9",fontWeight:700}}>CH5</span> Shoulder B
+              </span>
+              <div style={{display:"flex",gap:4}}>
+                <button onClick={()=>setCh5Manual(false)} style={{
+                  background:!ch5Manual?"#0ea5e9":"#1b2838",border:"none",
+                  color:!ch5Manual?"#080c14":"#3b5068",borderRadius:4,padding:"2px 8px",
+                  fontSize:9,cursor:"pointer",fontFamily:"IBM Plex Mono",fontWeight:700
+                }}>MIRROR</button>
+                <button onClick={()=>setCh5Manual(true)} style={{
+                  background:ch5Manual?"#f59e0b":"#1b2838",border:"none",
+                  color:ch5Manual?"#080c14":"#3b5068",borderRadius:4,padding:"2px 8px",
+                  fontSize:9,cursor:"pointer",fontFamily:"IBM Plex Mono",fontWeight:700
+                }}>MANUAL</button>
+              </div>
+              <span style={{color:"#c8d6e5",fontWeight:600,fontSize:13}}>{ch5Manual ? ch5Value : 180-servoDeg.shoulder}°</span>
+            </div>
+            {ch5Manual && (
+              <div>
+                <input type="range" min={0} max={180} value={ch5Value}
+                  onChange={e => {
+                    const v = Number(e.target.value);
+                    setCh5Value(v);
+                    if (liveMode && connected) {
+                      fetch(`${BRIDGE_URL}/servo?ch=5&angle=${v}`).catch(()=>{});
+                    }
+                  }}
+                  style={{width:"100%",accentColor:"#f59e0b",height:3}}/>
+                <div style={{display:"flex",justifyContent:"space-between",fontSize:8,color:"#1b2838"}}>
+                  <span>0°</span><span>180°</span>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* End Effector */}
+        <div style={{background:"#0d1117",borderRadius:16,border:"1px solid #1b2838",padding:18}}>
+          <span style={{fontFamily:"Outfit",fontSize:14,fontWeight:700,color:"#0ea5e9",letterSpacing:1,display:"block",marginBottom:10}}>END EFFECTOR</span>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
+            {[["X",ee.x,"#ef4444"],["Y",ee.y,"#22c55e"],["Z",ee.z,"#3b82f6"]].map(([ax,val,col]) => (
+              <div key={ax} style={{textAlign:"center",background:"#111927",borderRadius:10,padding:"10px 4px",border:"1px solid #1b2838"}}>
+                <div style={{fontSize:10,color:col,fontWeight:700}}>{ax}</div>
+                <div style={{fontSize:16,fontWeight:700,color:"#c8d6e5",margin:"2px 0"}}>{val.toFixed(1)}</div>
+                <div style={{fontSize:8,color:"#2a3f55"}}>mm</div>
+              </div>
+            ))}
+          </div>
+          <div style={{marginTop:8,textAlign:"center",background:"#111927",borderRadius:10,padding:"8px 4px",border:"1px solid #1b2838"}}>
+            <span style={{fontSize:10,color:"#3b5068"}}>Reach </span>
+            <span style={{fontSize:15,fontWeight:700,color:"#fbbf24"}}>{Math.sqrt(ee.x**2+ee.y**2+ee.z**2).toFixed(1)}</span>
+            <span style={{fontSize:9,color:"#3b5068"}}> mm</span>
+          </div>
+        </div>
+
+        {/* IK Solver */}
+        <div style={{background:"#0d1117",borderRadius:16,border:"1px solid #1b2838",padding:18}}>
+          <span style={{fontFamily:"Outfit",fontSize:14,fontWeight:700,color:"#fbbf24",letterSpacing:1,display:"block",marginBottom:10}}>IK SOLVER</span>
+          <div style={{display:"flex",flexDirection:"column",gap:6}}>
+            {[["X",ikTarget.x,"x"],["Y",ikTarget.y,"y"],["Z",ikTarget.z,"z"]].map(([label,val,k]) => (
+              <div key={k} style={{display:"flex",alignItems:"center",gap:8}}>
+                <label style={{fontSize:11,color:"#3b5068",width:20,fontWeight:700}}>{label}</label>
+                <input type="number" value={val}
+                  onChange={e => setIkTarget(p => ({...p,[k]:Number(e.target.value)}))}
+                  style={{
+                    background:"#111927",border:"1px solid #1b2838",color:"#c8d6e5",
+                    borderRadius:8,padding:"6px 10px",fontSize:12,fontFamily:"IBM Plex Mono",
+                    width:90,outline:"none"
+                  }}/>
+                <span style={{fontSize:9,color:"#2a3f55"}}>mm</span>
+              </div>
+            ))}
+          </div>
+          <button onClick={runIK} style={{
+            background:"linear-gradient(135deg,#0ea5e9,#0284c7)",border:"none",color:"#080c14",
+            borderRadius:10,padding:"10px 16px",fontSize:12,cursor:"pointer",fontFamily:"Outfit",
+            fontWeight:700,width:"100%",marginTop:12,letterSpacing:1,transition:"transform 0.15s"
+          }}
+          onMouseEnter={e=>e.target.style.transform="scale(1.02)"}
+          onMouseLeave={e=>e.target.style.transform="scale(1)"}
+          >SOLVE IK</button>
+          {ikError !== null && (
+            <div style={{fontSize:10,color:ikError<5?"#10b981":"#f59e0b",marginTop:8,textAlign:"center"}}>
+              Error: {ikError.toFixed(2)} mm {ikError<5?"✓":"⚠ may be out of reach"}
+            </div>
+          )}
+        </div>
+
+        {/* Demo Mode */}
+        <div style={{background:"#0d1117",borderRadius:16,border:`1px solid ${demoRunning?"#f43f5e":"#1b2838"}`,padding:18,transition:"border-color 0.3s"}}>
+          <span style={{fontFamily:"Outfit",fontSize:14,fontWeight:700,color:"#f43f5e",letterSpacing:1,display:"block",marginBottom:10}}>
+            {demoRunning ? "● DEMO RUNNING" : "DEMO MODE"}
+          </span>
+
+          {/* Mode tabs */}
+          <div style={{display:"flex",gap:6,marginBottom:10}}>
+            {[
+              {k:"random",  label:"RANDOM"},
+              {k:"pattern", label:"PATTERN"},
+            ].map(t => (
+              <button key={t.k}
+                onClick={() => !demoRunning && setDemoMode(t.k)}
+                disabled={demoRunning}
+                style={{
+                  flex:1,
+                  background: demoMode===t.k ? "#1b2838" : "#0d1117",
+                  border:`1px solid ${demoMode===t.k ? "#f43f5e" : "#1b2838"}`,
+                  color: demoMode===t.k ? "#f43f5e" : "#3b5068",
+                  borderRadius:8,padding:"6px 10px",fontSize:10,
+                  fontFamily:"Outfit",fontWeight:700,letterSpacing:1,
+                  cursor: demoRunning ? "not-allowed" : "pointer",
+                  transition:"all 0.2s"
+                }}>
+                {t.label}
+              </button>
+            ))}
+          </div>
+
+          {demoMode === "pattern" && (
+            <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:10}}>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <span style={{fontSize:9,color:"#2a3f55",width:42}}>SHAPE</span>
+                <select value={demoPattern}
+                  onChange={e => !demoRunning && setDemoPattern(e.target.value)}
+                  disabled={demoRunning}
+                  style={{
+                    flex:1,background:"#111927",color:"#c8d6e5",
+                    border:"1px solid #1b2838",borderRadius:8,padding:"6px 8px",
+                    fontSize:11,fontFamily:"Outfit",cursor: demoRunning ? "not-allowed" : "pointer"
+                  }}>
+                  {Object.entries(PATTERN_INFO).map(([k,v]) => (
+                    <option key={k} value={k}>{v.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <span style={{fontSize:9,color:"#2a3f55",width:42}}>Z (mm)</span>
+                <input type="range" min={10} max={200} step={5} value={demoZ}
+                  onChange={e => setDemoZ(Number(e.target.value))}
+                  style={{flex:1,accentColor:"#f43f5e",height:3}}/>
+                <span style={{fontSize:10,color:"#3b5068",width:35,textAlign:"right"}}>{demoZ}</span>
+              </div>
+            </div>
+          )}
+
+          <div style={{display:"flex",gap:8,marginBottom:10}}>
+            <button onClick={demoRunning ? stopDemo : startDemo}
+              disabled={!connected}
+              style={{
+                flex:1,
+                background:demoRunning?"#f43f5e":connected?"linear-gradient(135deg,#f43f5e,#e11d48)":"#1b2838",
+                border:"none",color:demoRunning?"#fff":connected?"#080c14":"#3b5068",borderRadius:10,
+                padding:"10px 16px",fontSize:12,cursor:connected?"pointer":"not-allowed",
+                fontFamily:"Outfit",fontWeight:700,letterSpacing:1,transition:"all 0.2s"
+              }}>
+              {demoRunning ? "■ STOP" : "▶ START"}
+            </button>
+          </div>
+
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+            <span style={{fontSize:9,color:"#2a3f55"}}>SLOW</span>
+            <input type="range" min={500} max={5000} step={250} value={demoSpeed}
+              onChange={e => setDemoSpeed(Number(e.target.value))}
+              style={{flex:1,accentColor:"#f43f5e",height:3}}/>
+            <span style={{fontSize:9,color:"#2a3f55"}}>FAST</span>
+            <span style={{fontSize:10,color:"#3b5068",width:35,textAlign:"right"}}>
+              {demoMode === "pattern" ? `${(cycleMsForPattern()/1000).toFixed(1)}s/cycle` : `${(demoSpeed/1000).toFixed(1)}s`}
+            </span>
+          </div>
+
+          {!connected && (
+            <div style={{fontSize:10,color:"#2a3f55",textAlign:"center"}}>Bridge required</div>
+          )}
+
+          {demoLog.length > 0 && (
+            <div style={{background:"#111927",borderRadius:8,padding:8,maxHeight:130,overflowY:"auto",marginTop:6}}>
+              {demoLog.map((log, i) => (
+                <div key={i} style={{fontSize:9,color:"#3b5068",fontFamily:"IBM Plex Mono",lineHeight:1.6,display:"flex",justifyContent:"space-between"}}>
+                  <span>
+                    <span style={{color:"#f43f5e"}}>#{log.step}</span> → ({log.x}, {log.y}, {log.z})
+                  </span>
+                  <span style={{color:log.err<5?"#10b981":"#f59e0b"}}>{log.err}mm</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* ESP32 Output */}
+        <div style={{background:"#0d1117",borderRadius:16,border:"1px solid #1b2838",padding:18}}>
+          <span style={{fontFamily:"Outfit",fontSize:14,fontWeight:700,color:"#10b981",letterSpacing:1,display:"block",marginBottom:10}}>ESP32 OUTPUT</span>
+          <div style={{background:"#111927",borderRadius:8,padding:10,fontFamily:"IBM Plex Mono",fontSize:11,color:"#3b5068",lineHeight:1.8}}>
+            <div><span style={{color:"#10b981"}}>pca.</span>setPWM(<span style={{color:"#fbbf24"}}>6</span>, <span style={{color:"#c8d6e5"}}>{servoDeg.base}</span>); <span style={{color:"#1b2838"}}>// base</span></div>
+            <div><span style={{color:"#10b981"}}>pca.</span>setPWM(<span style={{color:"#fbbf24"}}>4</span>, <span style={{color:"#c8d6e5"}}>{servoDeg.shoulder}</span>); <span style={{color:"#1b2838"}}>// shoulder A</span></div>
+            <div><span style={{color:"#10b981"}}>pca.</span>setPWM(<span style={{color:"#fbbf24"}}>5</span>, <span style={{color:"#c8d6e5"}}>{180-servoDeg.shoulder}</span>); <span style={{color:"#1b2838"}}>// shoulder B</span></div>
+            <div><span style={{color:"#10b981"}}>pca.</span>setPWM(<span style={{color:"#fbbf24"}}>3</span>, <span style={{color:"#c8d6e5"}}>{servoDeg.elbow}</span>); <span style={{color:"#1b2838"}}>// elbow</span></div>
+            <div><span style={{color:"#10b981"}}>pca.</span>setPWM(<span style={{color:"#fbbf24"}}>2</span>, <span style={{color:"#c8d6e5"}}>{servoDeg.wrist_pitch}</span>); <span style={{color:"#1b2838"}}>// wrist pitch</span></div>
+            <div><span style={{color:"#10b981"}}>pca.</span>setPWM(<span style={{color:"#fbbf24"}}>1</span>, <span style={{color:"#c8d6e5"}}>{servoDeg.wrist_roll}</span>); <span style={{color:"#1b2838"}}>// wrist roll</span></div>
+            <div><span style={{color:"#10b981"}}>pca.</span>setPWM(<span style={{color:"#fbbf24"}}>0</span>, <span style={{color:"#c8d6e5"}}>{servoDeg.gripper}</span>); <span style={{color:"#1b2838"}}>// gripper</span></div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>

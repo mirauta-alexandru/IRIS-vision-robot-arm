@@ -1,0 +1,8 @@
+numpy
+opencv-python
+ikpy
+pyserial
+requests
+pygame
+matplotlib
+scipy

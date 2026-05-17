@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<robot name="iris_6dof">
+
+  <!-- ==================== BASE ==================== -->
+  <link name="base_link">
+    <visual>
+      <geometry><cylinder radius="0.04" length="0.02"/></geometry>
+      <material name="dark"><color rgba="0.2 0.2 0.2 1"/></material>
+    </visual>
+  </link>
+
+  <!-- ==================== BASE ROTATION (CH6) ==================== -->
+  <!-- Vertical axis rotation, servo offset 90° = center -->
+  <joint name="base_rotation" type="revolute">
+    <parent link="base_link"/>
+    <child link="base_turntable"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-1.5708" upper="1.5708" effort="1.0" velocity="1.0"/>
+  </joint>
+
+  <link name="base_turntable">
+    <visual>
+      <geometry><cylinder radius="0.035" length="0.11"/></geometry>
+      <origin xyz="0 0 0.055"/>
+      <material name="blue"><color rgba="0.1 0.3 0.8 1"/></material>
+    </visual>
+  </link>
+
+  <!-- ==================== SHOULDER (CH4/CH5) ==================== -->
+  <!-- 110mm straight up from base -->
+  <!-- Servo offset: 150° = horizontal (0° IK), scade = ridica -->
+  <joint name="shoulder" type="revolute">
+    <parent link="base_turntable"/>
+    <child link="upper_arm"/>
+    <origin xyz="0 0 0.110" rpy="0 0 0"/>
+    <axis xyz="0 -1 0"/>
+    <limit lower="-0.5236" upper="2.618" effort="1.0" velocity="1.0"/>
+  </joint>
+
+  <link name="upper_arm">
+    <visual>
+      <geometry><box size="0.03 0.03 0.21"/></geometry>
+      <origin xyz="0.1025 0 -0.02225" rpy="0 0.2133 0"/>
+      <material name="green"><color rgba="0.1 0.7 0.3 1"/></material>
+    </visual>
+  </link>
+
+  <!-- ==================== ELBOW (CH3) ==================== -->
+  <!-- 205mm horizontal, 55mm down from shoulder -->
+  <joint name="elbow" type="revolute">
+    <parent link="upper_arm"/>
+    <child link="forearm"/>
+    <origin xyz="0.205 0 -0.055" rpy="0 0 0"/>
+    <axis xyz="0 -1 0"/>
+    <limit lower="-2.2689" upper="2.2689" effort="1.0" velocity="1.0"/>
+  </joint>
+
+  <link name="forearm">
+    <visual>
+      <geometry><box size="0.025 0.025 0.138"/></geometry>
+      <origin xyz="0.069 0 0" rpy="0 1.5708 0"/>
+      <material name="orange"><color rgba="0.9 0.5 0.1 1"/></material>
+    </visual>
+  </link>
+
+  <!-- ==================== WRIST PITCH (CH2) ==================== -->
+  <!-- 138mm straight from elbow -->
+  <!-- Servo offset: 90° = straight, scade = urca -->
+  <joint name="wrist_pitch" type="revolute">
+    <parent link="forearm"/>
+    <child link="wrist_pitch_link"/>
+    <origin xyz="0.138 0 0" rpy="0 0 0"/>
+    <axis xyz="0 -1 0"/>
+    <limit lower="-1.3963" upper="1.5708" effort="1.0" velocity="1.0"/>
+  </joint>
+
+  <link name="wrist_pitch_link">
+    <visual>
+      <geometry><box size="0.02 0.02 0.027"/></geometry>
+      <origin xyz="0.0135 0 0" rpy="0 1.5708 0"/>
+      <material name="yellow"><color rgba="0.9 0.9 0.2 1"/></material>
+    </visual>
+  </link>
+
+  <!-- ==================== WRIST ROLL (CH1) ==================== -->
+  <!-- 27mm straight from wrist pitch -->
+  <!-- Servo offset: 55° = straight -->
+  <joint name="wrist_roll" type="revolute">
+    <parent link="wrist_pitch_link"/>
+    <child link="wrist_roll_link"/>
+    <origin xyz="0.027 0 0" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-1.5708" upper="1.5708" effort="1.0" velocity="1.0"/>
+  </joint>
+
+  <link name="wrist_roll_link">
+    <visual>
+      <geometry><box size="0.02 0.02 0.043"/></geometry>
+      <origin xyz="0.0215 0 0" rpy="0 1.5708 0"/>
+      <material name="purple"><color rgba="0.6 0.2 0.8 1"/></material>
+    </visual>
+  </link>
+
+  <!-- ==================== GRIPPER (CH0) ==================== -->
+  <!-- 43mm from wrist roll to gripper axis -->
+  <!-- Servo offset: 60° = closed -->
+  <joint name="gripper_joint" type="revolute">
+    <parent link="wrist_roll_link"/>
+    <child link="gripper_link"/>
+    <origin xyz="0.043 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-1.0472" upper="1.0472" effort="1.0" velocity="1.0"/>
+  </joint>
+
+  <link name="gripper_link">
+    <visual>
+      <geometry><box size="0.015 0.03 0.087"/></geometry>
+      <origin xyz="0.0435 0 0" rpy="0 1.5708 0"/>
+      <material name="red"><color rgba="0.8 0.1 0.1 1"/></material>
+    </visual>
+  </link>
+
+  <!-- End effector (tip of gripper) -->
+  <joint name="ee_fixed" type="fixed">
+    <parent link="gripper_link"/>
+    <child link="ee_link"/>
+    <origin xyz="0.087 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <link name="ee_link"/>
+
+</robot>

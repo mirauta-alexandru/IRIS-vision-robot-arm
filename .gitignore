@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+iris-env/
+
+# macOS / editor noise
+.DS_Store
+.idea/
+.vscode/
+
+# Secrets / local environment
+.env
+.env.*
+*.pem
+*.key
+
+# Local calibration outputs
+files/camera_calibration.npz
+files/camera_calibration.json
+files/charuco_calibration.json
+files/vision_calibration_v3.json
+files/vision_correction.json
+files/vision_points.json
+files/camera_robot_transform.json
+iris_presets.json
+
+# Debug/runtime artifacts
+files/vision_detection_debug.jpg
+files/vision_correction_debug.png
+files/iris_ik_test.png
+files/iris_multi_targets.png
+*.log
+
+# Local assistant handoff/planning notes
+continue.markdown
+task_plan.md
+project_cleanup_plan.md
+
+# Archives / temporary exports
+*.zip
+*.tar
+*.tar.gz
+
+# Keep source and documentation, ignore generated local state.

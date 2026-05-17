@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IRIS Live — Voice + Robotics ER</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%;overflow:hidden}
+body{font-family:'Outfit',sans-serif;background:#06080e;color:#e2e8f0}
+::-webkit-scrollbar{width:4px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:#1e293b;border-radius:2px}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+@keyframes breathe{0%,100%{transform:scale(1)}50%{transform:scale(1.03)}}
+@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}
+@keyframes slideUp{from{transform:translateY(12px);opacity:0}to{transform:translateY(0);opacity:1}}
+@keyframes waveform{0%,100%{height:4px}50%{height:var(--wave-h,20px)}}
+@keyframes glow{0%,100%{box-shadow:0 0 20px rgba(249,115,22,.15)}50%{box-shadow:0 0 40px rgba(249,115,22,.3)}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const {useState,useRef,useCallback,useEffect} = React;
+
+const BRIDGE = "http://localhost:8765";
+const GEMINI_WS_BASE = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
+const LIVE_MODEL = "gemini-3.1-flash-live-preview";
+
+// ═══════════════════════════════════
+//  IRIS EYES
+// ═══════════════════════════════════
+function IrisEyes({state,speaking,listening}) {
+  const [blinkPhase,setBlinkPhase]=useState(0);
+  const [lookX,setLookX]=useState(0);
+  const [lookY,setLookY]=useState(0);
+  useEffect(()=>{const b=()=>{setBlinkPhase(1);setTimeout(()=>setBlinkPhase(0),150);};const iv=setInterval(b,2500+Math.random()*3000);return()=>clearInterval(iv);},[]);
+  useEffect(()=>{const m=()=>{if(state==='thinking'){setLookX((Math.random()-.5)*16);setLookY((Math.random()-.5)*8);}else if(state==='listening'){setLookX((Math.random()-.5)*4);setLookY(3+Math.random()*3);}else if(state==='acting'){setLookX(8+Math.random()*6);setLookY(6+Math.random()*4);}else{setLookX((Math.random()-.5)*8);setLookY((Math.random()-.5)*6);}};m();const iv=setInterval(m,state==='thinking'?600:state==='acting'?800:2000);return()=>clearInterval(iv);},[state]);
+  const ec=state==='error'?'#ef4444':state==='acting'?'#10b981':state==='thinking'?'#a855f7':listening?'#f97316':'#0ea5e9';
+  const lid=blinkPhase?.92:0;const sb=speaking?Math.sin(Date.now()/120)*2:0;
+  const Eye=({cx})=>(<g transform={`translate(${cx},${70+sb})`}><ellipse cx="0" cy="0" rx="38" ry={32*(1-lid)} fill="#0c1220" stroke={ec} strokeWidth="1.5" style={{transition:'all .15s'}}/><ellipse cx={lookX*.6} cy={lookY*.6} rx="18" ry={17*(1-lid)} fill={ec} opacity=".18" style={{transition:'cx .4s,cy .4s'}}/><ellipse cx={lookX*.6} cy={lookY*.6} rx="10" ry={9.5*(1-lid)} fill={ec} style={{transition:'cx .4s,cy .4s'}}/><circle cx={lookX*.6-5} cy={lookY*.6-6} r={3*(1-lid)} fill="#fff" opacity=".6" style={{transition:'cx .4s,cy .4s'}}/><ellipse cx="0" cy={-30+lid*28} rx="42" ry="14" fill="#06080e"/></g>);
+  return(<svg viewBox="0 0 280 140" style={{width:'100%',maxWidth:280}}><defs><radialGradient id="eg" cx="50%" cy="50%"><stop offset="0%" stopColor={ec} stopOpacity=".25"/><stop offset="100%" stopColor={ec} stopOpacity="0"/></radialGradient></defs><ellipse cx="80" cy="70" rx="55" ry="55" fill="url(#eg)"/><ellipse cx="200" cy="70" rx="55" ry="55" fill="url(#eg)"/><Eye cx={80}/><Eye cx={200}/>{speaking&&<path d={`M122,125Q131,${129+Math.sin(Date.now()/80)*5}140,${127+Math.sin(Date.now()/100)*4}Q149,${129+Math.sin(Date.now()/90)*5}158,125`} fill="none" stroke={ec} strokeWidth="2" opacity=".5" strokeLinecap="round"/>}</svg>);
+}
+
+function Waveform({active,color,bars=24}){return(<div style={{display:'flex',alignItems:'center',gap:2,height:32,justifyContent:'center'}}>{Array.from({length:bars}).map((_,i)=>(<div key={i} style={{width:2.5,borderRadius:2,background:color||'#f97316',opacity:active?.7:.15,height:active?undefined:4,animation:active?`waveform ${.3+Math.random()*.4}s ease-in-out ${i*.03}s infinite`:'none','--wave-h':`${8+Math.random()*22}px`,transition:'opacity .3s'}}/>))}</div>);}
+
+function ActionOverlay({target}){
+  if(!target)return null;
+  const t=target.target||target;
+  const g=target.gripper;
+  return(<svg style={{position:'absolute',top:0,left:0,width:'100%',height:'100%',pointerEvents:'none'}}>
+    {t?.x!==undefined&&<g>
+      {t.bbox&&<rect x={`${t.bbox.x}%`} y={`${t.bbox.y}%`} width={`${t.bbox.w}%`} height={`${t.bbox.h}%`} fill="none" stroke="#f97316" strokeWidth="2" opacity=".75"/>}
+      <circle cx={`${t.x}%`} cy={`${t.y}%`} r="22" fill="none" stroke="#f97316" strokeWidth="2" strokeDasharray="6,4" opacity=".85"><animateTransform attributeName="transform" type="rotate" from={`0 0 0`} to={`360 0 0`} dur="3s" repeatCount="indefinite"/></circle>
+      <circle cx={`${t.x}%`} cy={`${t.y}%`} r="4" fill="#f97316" opacity=".95"/>
+      {t.label&&<text x={`${Math.min(t.x+3,90)}%`} y={`${t.y-4}%`} fill="#f97316" fontSize="12" fontWeight="700" fontFamily="Outfit">{t.label}</text>}
+      {t.robot&&<text x={`${Math.min(t.x+3,90)}%`} y={`${t.y+2}%`} fill="#f97316" fontSize="9" fontFamily="IBM Plex Mono" opacity=".75">({t.robot.x},{t.robot.y})mm</text>}
+    </g>}
+    {g?.x!==undefined&&<g>
+      {t?.x!==undefined&&<line x1={`${g.x}%`} y1={`${g.y}%`} x2={`${t.x}%`} y2={`${t.y}%`} stroke="#22c55e" strokeWidth="2" strokeDasharray="4,3" opacity=".8"/>}
+      <circle cx={`${g.x}%`} cy={`${g.y}%`} r="14" fill="none" stroke="#22c55e" strokeWidth="2" opacity=".9"/>
+      <path d={`M ${g.x-1.2} ${g.y} L ${g.x+1.2} ${g.y} M ${g.x} ${g.y-1.2} L ${g.x} ${g.y+1.2}`} stroke="#22c55e" strokeWidth="2" vectorEffect="non-scaling-stroke"/>
+      <text x={`${Math.min(g.x+2,90)}%`} y={`${g.y+4}%`} fill="#22c55e" fontSize="10" fontWeight="700" fontFamily="Outfit">gripper</text>
+    </g>}
+    {target.error!==undefined&&<text x="2%" y="96%" fill="#22c55e" fontSize="11" fontFamily="IBM Plex Mono">err {target.error}mm</text>}
+  </svg>);
+}
+
+// ═══════════════════════════════════
+//  MAIN APP — Live=Voice, Robotics ER=Execution
+// ═══════════════════════════════════
+function App(){
+  const [apiKey,setApiKey]=useState(()=>localStorage.getItem('iris_gemini_key')||'');
+  const [keySet,setKeySet]=useState(()=>!!localStorage.getItem('iris_gemini_key'));
+  const [connected,setConnected]=useState(false);
+  const [sessionActive,setSessionActive]=useState(false);
+  const [cameraOn,setCameraOn]=useState(false);
+  const [irisState,setIrisState]=useState('idle');
+  const [speaking,setSpeaking]=useState(false);
+  const [isListening,setIsListening]=useState(false);
+  const [messages,setMessages]=useState([]);
+  const [inputText,setInputText]=useState('');
+  const [statusText,setStatusText]=useState('');
+  const [activeTarget,setActiveTarget]=useState(null);
+  const [roboticsBusy,setRoboticsBusy]=useState(false);
+  const [muted,setMuted]=useState(false);
+  const mutedRef=useRef(false);
+  useEffect(()=>{mutedRef.current=muted;},[muted]);
+  const chatRef=useRef(null);
+  const audioContextRef=useRef(null);
+  const audioQueueRef=useRef([]);
+  const isPlayingRef=useRef(false);
+  const wsRef=useRef(null);
+  const mediaStreamRef=useRef(null);
+  const processorRef=useRef(null);
+  
+  // Bridge check
+  useEffect(()=>{
+    const check=()=>{fetch(BRIDGE+"/ping").then(r=>r.json()).then(d=>{setConnected(d.serial===true);if(!cameraOn&&d.serial){fetch(BRIDGE+"/camera/start").then(r=>r.json()).then(c=>{if(c.ok)setCameraOn(true);}).catch(()=>{});}}).catch(()=>setConnected(false));};
+    check();const iv=setInterval(check,5000);return()=>clearInterval(iv);
+  },[cameraOn]);
+  
+  useEffect(()=>{if(chatRef.current)chatRef.current.scrollTop=chatRef.current.scrollHeight;},[messages]);
+  
+  // Audio playback (24kHz PCM from Gemini Live)
+  const initAudio=useCallback(()=>{if(!audioContextRef.current)audioContextRef.current=new(window.AudioContext||window.webkitAudioContext)({sampleRate:24000});},[]);
+  
+  const playChunk=useCallback((b64)=>{
+    initAudio();const ctx=audioContextRef.current;if(!ctx)return;
+    const raw=atob(b64);const bytes=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)bytes[i]=raw.charCodeAt(i);
+    const samples=new Float32Array(bytes.length/2);const view=new DataView(bytes.buffer);
+    for(let i=0;i<samples.length;i++)samples[i]=view.getInt16(i*2,true)/32768;
+    const buf=ctx.createBuffer(1,samples.length,24000);buf.getChannelData(0).set(samples);
+    audioQueueRef.current.push(buf);if(!isPlayingRef.current)drainQueue();
+  },[]);
+  
+  const drainQueue=useCallback(()=>{
+    const ctx=audioContextRef.current;
+    if(!ctx||audioQueueRef.current.length===0){isPlayingRef.current=false;setSpeaking(false);if(irisState==='speaking')setIrisState('idle');return;}
+    isPlayingRef.current=true;setSpeaking(true);setIrisState('speaking');
+    const buf=audioQueueRef.current.shift();const src=ctx.createBufferSource();src.buffer=buf;src.connect(ctx.destination);src.onended=()=>drainQueue();src.start();
+  },[]);
+  
+  // ═══════════════════════════════════
+  //  ROBOTICS EXECUTION (via bridge SSE)
+  // ═══════════════════════════════════
+  const executeRoboticsTask=useCallback(async(task)=>{
+    setRoboticsBusy(true);
+    setIrisState('acting');
+    setStatusText('🤖 Robotics execută...');
+    setMessages(prev=>[...prev,{role:'system',text:`🤖 Task: ${task}`}]);
+    
+    try{
+      const resp=await fetch(BRIDGE+"/robotics/execute",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({task})
+      });
+      
+      const reader=resp.body.getReader();
+      const decoder=new TextDecoder();
+      let buffer='';
+      let summary='';
+      
+      while(true){
+        const{done,value}=await reader.read();
+        if(done)break;
+        buffer+=decoder.decode(value,{stream:true});
+        
+        const lines=buffer.split('\n');
+        buffer=lines.pop()||'';
+        
+        let eventType='';
+        for(const line of lines){
+          if(line.startsWith('event: ')){eventType=line.slice(7).trim();}
+          else if(line.startsWith('data: ')){
+            try{
+              const data=JSON.parse(line.slice(6));
+              if(eventType==='action'){
+                setMessages(prev=>[...prev,{role:'action',name:data.name,args:data.args}]);
+                setStatusText(`⚡ ${data.name}`);
+              }else if(eventType==='action_result'){
+                setMessages(prev=>[...prev,{role:'result',ok:data.result?.success!==false,name:data.name,data:data.result}]);
+                const r=data.result||{};
+                if(data.name==='detect_objects'&&(r.objects?.[0]?.norm||r.object?.norm)){
+                  const o=r.objects?.[0]||r.object;
+                  setActiveTarget({target:{x:o.norm.x,y:o.norm.y,label:o.label||'target',robot:o.robot,bbox:o.bbox_norm}});
+                }else if(data.name==='check_target_alignment'){
+                  const next={};
+                  if(r.target_norm)next.target={x:r.target_norm.x,y:r.target_norm.y,label:'target',robot:r.target};
+                  if(r.tip_norm)next.gripper={x:r.tip_norm.x,y:r.tip_norm.y,robot:r.tip};
+                  if(r.error_mm!==undefined)next.error=r.error_mm;
+                  if(next.target||next.gripper)setActiveTarget(next);
+                }else if(data.name==='get_gripper_pose'&&r.tip_norm){
+                  setActiveTarget({gripper:{x:r.tip_norm.x,y:r.tip_norm.y,robot:r.tip}});
+                }else if(data.name==='go_home'||data.name==='open_gripper'){
+                  setActiveTarget(null);
+                }
+              }else if(eventType==='thinking'){
+                setStatusText(`💭 ${data.text?.substring(0,60)}...`);
+              }else if(eventType==='done'){
+                summary=data.summary||'Task complet.';
+              }else if(eventType==='error'){
+                setMessages(prev=>[...prev,{role:'error',text:data.text}]);
+              }
+            }catch(e){}
+          }
+        }
+      }
+      
+      setStatusText('');
+      setRoboticsBusy(false);
+      setIrisState('idle');
+      return{success:true,summary};
+    }catch(err){
+      setStatusText('');
+      setRoboticsBusy(false);
+      setIrisState('error');
+      setTimeout(()=>setIrisState('idle'),2000);
+      return{success:false,error:err.message};
+    }
+  },[]);
+  
+  const describeScene=useCallback(async(question)=>{
+    try{
+      const r=await fetch(BRIDGE+"/robotics/describe",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({question:question||"Descrie tot ce vezi pe masa de lucru. Fii concis, în română."})
+      });
+      const d=await r.json();
+      return{success:true,description:d.description||d.error||"Nu pot vedea."};
+    }catch(err){
+      return{success:false,description:"Camera indisponibilă."};
+    }
+  },[]);
+  
+  // ═══════════════════════════════════
+  //  LIVE API SESSION (voice only — NO video streaming!)
+  // ═══════════════════════════════════
+  const startSession=useCallback(async()=>{
+    if(!apiKey)return;initAudio();
+    const ws=new WebSocket(`${GEMINI_WS_BASE}?key=${apiKey}`);wsRef.current=ws;
+    ws.binaryType='arraybuffer';
+    setStatusText('Connecting...');
+    
+    ws.onopen=()=>{
+      ws.send(JSON.stringify({setup:{
+        model:`models/${LIVE_MODEL}`,
+        generationConfig:{responseModalities:["AUDIO"],speechConfig:{voiceConfig:{prebuiltVoiceConfig:{voiceName:"Orus"}}}},
+        systemInstruction:{parts:[{text:`You are IRIS — an intelligent robot arm assistant with voice interface.
+You speak Romanian naturally and conversationally. You are enthusiastic and expressive.
+
+═══ YOUR ARCHITECTURE ═══
+You are the VOICE layer. You talk with the user and delegate physical work to Robotics ER.
+When you call execute_robot_task, it runs in the background — you DON'T wait for it!
+You can keep talking to the user while the robot works.
+When Robotics finishes, you'll receive a message starting with [ROBOTICS RESULT].
+Read it and tell the user what happened.
+
+═══ YOUR TOOLS ═══
+1. execute_robot_task(task) — NON-BLOCKING! Sends task to Robotics ER and returns immediately.
+   You'll get the result later as a [ROBOTICS RESULT] message. Keep talking meanwhile!
+   Examples: "ia cubul roșu", "pune pixul în dreapta", "sortează obiectele"
+
+2. look_at_scene(question) — Takes a camera photo and describes what's visible. Fast (~2s).
+   Use when user asks "ce vezi?", to check results, or to answer visual questions.
+   This one IS blocking — you wait for the answer, then tell the user.
+
+3. go_home() — Arm to rest position.
+
+═══ HOW TO BEHAVE ═══
+- ALWAYS say something before calling a tool: "Bun, mă duc să iau cubul!"
+- After calling execute_robot_task, KEEP TALKING! Say "Lucrez la asta..." or chat casually
+- When you see [ROBOTICS RESULT], announce the result: "Gata! Am pus cubul în stânga!"
+- If result says it failed: "Nu am reușit, vrei să încerc din nou?"
+- For visual questions ("ce culoare are?", "ce e pe masă?"), use look_at_scene
+- Keep responses SHORT: 1-2 sentences
+- Be fun! You're a robot with personality!
+- If user says "stop" or changes their mind, call cancel_robot_task to stop the current action
+- Use get_robot_status to check what Robotics is doing when the user asks`}]},
+        tools:[{functionDeclarations:[
+          {name:"execute_robot_task",description:"Send a task to Gemini Robotics ER 1.6 for autonomous execution. NON-BLOCKING - returns immediately. Result comes later as [ROBOTICS RESULT] message.",parameters:{type:"OBJECT",properties:{task:{type:"STRING",description:"Natural language task, e.g. 'pick up the red cube and place it on the right side', 'grab the pen'"}},required:["task"]}},
+          {name:"cancel_robot_task",description:"STOP the current robot task immediately. Arm goes home, gripper opens. Use when the user changes their mind or says stop/oprește/nu mai vreau.",parameters:{type:"OBJECT",properties:{}}},
+          {name:"get_robot_status",description:"Check what Robotics ER is currently doing. Returns busy/idle status and last action. Use to tell the user what's happening.",parameters:{type:"OBJECT",properties:{}}},
+          {name:"look_at_scene",description:"Take a camera snapshot and ask Robotics ER to describe what it sees. Use when user asks what's visible or to check results.",parameters:{type:"OBJECT",properties:{question:{type:"STRING",description:"What to look for, e.g. 'ce obiecte sunt pe masă?', 'am prins obiectul?'"}},required:["question"]}},
+          {name:"go_home",description:"Send robot arm to home/rest position. Opens gripper and raises arm."},
+        ]}],
+      }}));
+    };
+    
+    ws.onmessage=async(ev)=>{
+      let text;
+      if(ev.data instanceof ArrayBuffer){text=new TextDecoder().decode(ev.data);}
+      else if(ev.data instanceof Blob){text=await ev.data.text();}
+      else{text=ev.data;}
+      let r;
+      try{r=JSON.parse(text);}catch(e){return;}
+      await handleServerMessage(r);
+    };
+    
+    const handleServerMessage=async(r)=>{
+      if(r.setupComplete){setSessionActive(true);setStatusText('');startMic();return;}
+      if(r.serverContent){
+        const sc=r.serverContent;
+        if(sc.modelTurn?.parts){for(const p of sc.modelTurn.parts){if(p.inlineData)playChunk(p.inlineData.data);if(p.text){setMessages(prev=>{const l=prev[prev.length-1];if(l?.role==='iris'&&!l.final)return[...prev.slice(0,-1),{...l,text:l.text+p.text}];return[...prev,{role:'iris',text:p.text,time:new Date().toLocaleTimeString()}];});}}}
+        if(sc.inputTranscription?.text){const t=sc.inputTranscription.text;if(t.trim())setMessages(prev=>{const l=prev[prev.length-1];if(l?.role==='user'&&!l.final)return[...prev.slice(0,-1),{...l,text:t}];return[...prev,{role:'user',text:t,time:new Date().toLocaleTimeString()}];});}
+        if(sc.outputTranscription?.text){const t=sc.outputTranscription.text;if(t.trim())setMessages(prev=>{const l=prev[prev.length-1];if(l?.role==='iris'&&!l.final)return[...prev.slice(0,-1),{...l,text:t,final:true}];return[...prev,{role:'iris',text:t,time:new Date().toLocaleTimeString(),final:true}];});}
+        if(sc.turnComplete&&!isPlayingRef.current){setIrisState('idle');setSpeaking(false);}
+        if(sc.interrupted){audioQueueRef.current=[];isPlayingRef.current=false;setSpeaking(false);}
+      }
+      // ── Tool calls from Live → routed to bridge/Robotics ──
+      if(r.toolCall){
+        const frs=[];
+        for(const fc of(r.toolCall.functionCalls||[])){
+          let res;
+          if(fc.name==='execute_robot_task'){
+            // NON-BLOCKING: return immediate acknowledgment, run task in background
+            // When task completes, inject result as user text message so Live can speak about it
+            res={success:true,status:"Task trimis la Robotics ER. Se execută..."};
+            frs.push({id:fc.id,name:fc.name,response:res});
+            // Send tool response NOW so Live can keep talking
+            if(wsRef.current?.readyState===WebSocket.OPEN)wsRef.current.send(JSON.stringify({toolResponse:{functionResponses:frs}}));
+            // Run robotics in background
+            executeRoboticsTask(fc.args?.task||'describe scene').then(result=>{
+              // When done, send result as a user text message so Live processes it
+              if(wsRef.current?.readyState===WebSocket.OPEN){
+                const summary=result.summary||result.error||'Task finalizat.';
+                wsRef.current.send(JSON.stringify({clientContent:{turns:[{role:"user",parts:[{text:`[ROBOTICS RESULT] ${summary}`}]}],turnComplete:true}}));
+              }
+            });
+            return; // Already sent toolResponse, don't send again below
+          }else if(fc.name==='cancel_robot_task'){
+            setStatusText('🛑 Opresc...');
+            try{
+              const r=await fetch(BRIDGE+"/robotics/cancel",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({})});
+              res=await r.json();
+              res.success=true;
+              res.message="Task anulat. Brațul s-a dus acasă.";
+            }catch(e){res={success:false,error:e.message};}
+            setStatusText('');
+            setRoboticsBusy(false);
+            setIrisState('idle');
+          }else if(fc.name==='get_robot_status'){
+            try{
+              const r=await fetch(BRIDGE+"/robotics/status");
+              res=await r.json();
+              res.success=true;
+            }catch(e){res={success:false,status:"unknown",error:e.message};}
+          }else if(fc.name==='look_at_scene'){
+            // look_at_scene is fast (~2s), keep it blocking so Live gets the answer
+            setIrisState('thinking');
+            setStatusText('👁 Mă uit...');
+            res=await describeScene(fc.args?.question);
+            setStatusText('');
+            setIrisState('idle');
+          }else if(fc.name==='go_home'){
+            setIrisState('acting');
+            setStatusText('🏠 Merg acasă...');
+            try{
+              await fetch(BRIDGE+"/gripper?angle=0");
+              await fetch(BRIDGE+"/ik",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({x:200,y:0,z:250,send:true})});
+              res={success:true};
+            }catch(e){res={success:false,error:e.message};}
+            setStatusText('');
+            setIrisState('idle');
+          }else{
+            res={error:`Unknown tool: ${fc.name}`};
+          }
+          frs.push({id:fc.id,name:fc.name,response:res});
+        }
+        if(wsRef.current?.readyState===WebSocket.OPEN)wsRef.current.send(JSON.stringify({toolResponse:{functionResponses:frs}}));
+      }
+    };
+    ws.onerror=()=>{setIrisState('error');setStatusText('WebSocket error');};
+    ws.onclose=()=>{setSessionActive(false);setIrisState('idle');stopAll();};
+  },[apiKey,executeRoboticsTask,describeScene,playChunk,initAudio]);
+  
+  // Mic capture → PCM 16kHz (NO video streaming!)
+  const startMic=useCallback(async()=>{
+    try{
+      const stream=await navigator.mediaDevices.getUserMedia({audio:{sampleRate:16000,channelCount:1,echoCancellation:true,noiseSuppression:true}});
+      mediaStreamRef.current=stream;
+      const actx=new AudioContext({sampleRate:16000});const src=actx.createMediaStreamSource(stream);
+      const proc=actx.createScriptProcessor(4096,1,1);
+      proc.onaudioprocess=(e)=>{
+        if(!wsRef.current||wsRef.current.readyState!==WebSocket.OPEN)return;
+        if(mutedRef.current)return; // muted — don't send audio
+        const f=e.inputBuffer.getChannelData(0);const i16=new Int16Array(f.length);
+        for(let i=0;i<f.length;i++){const s=Math.max(-1,Math.min(1,f[i]));i16[i]=s<0?s*0x8000:s*0x7FFF;}
+        const b64=btoa(String.fromCharCode(...new Uint8Array(i16.buffer)));
+        wsRef.current.send(JSON.stringify({realtimeInput:{audio:{data:b64,mimeType:"audio/pcm;rate=16000"}}}));
+      };
+      src.connect(proc);proc.connect(actx.destination);
+      processorRef.current={proc,src,actx};setIsListening(true);
+    }catch(err){console.error('Mic:',err);}
+  },[]);
+  
+  const stopAll=useCallback(()=>{
+    if(mediaStreamRef.current){mediaStreamRef.current.getTracks().forEach(t=>t.stop());mediaStreamRef.current=null;}
+    if(processorRef.current){processorRef.current.proc.disconnect();processorRef.current.src.disconnect();processorRef.current.actx.close();processorRef.current=null;}
+    setIsListening(false);
+  },[]);
+  
+  const endSession=useCallback(()=>{stopAll();if(wsRef.current){wsRef.current.close();wsRef.current=null;}audioQueueRef.current=[];isPlayingRef.current=false;setSessionActive(false);setSpeaking(false);setIrisState('idle');},[stopAll]);
+  
+  const sendText=useCallback(()=>{
+    const msg=inputText.trim();if(!msg||!wsRef.current||wsRef.current.readyState!==WebSocket.OPEN)return;
+    setInputText('');setMessages(prev=>[...prev,{role:'user',text:msg,time:new Date().toLocaleTimeString(),final:true}]);
+    wsRef.current.send(JSON.stringify({clientContent:{turns:[{role:"user",parts:[{text:msg}]}],turnComplete:true}}));
+  },[inputText]);
+  
+  const saveKey=useCallback(()=>{if(apiKey.trim()){localStorage.setItem('iris_gemini_key',apiKey.trim());setKeySet(true);}},[apiKey]);
+  
+  // ═══════════════════════════════════
+  //  RENDER
+  // ═══════════════════════════════════
+  if(!keySet) return(
+    <div style={{height:'100vh',display:'flex',alignItems:'center',justifyContent:'center',background:'radial-gradient(ellipse at 50% 30%,#0f1520,#06080e)'}}>
+      <div style={{textAlign:'center',maxWidth:400}}>
+        <div style={{fontSize:48,fontWeight:900,color:'#f97316',letterSpacing:6,marginBottom:8}}>IRIS</div>
+        <div style={{fontSize:14,color:'#374151',marginBottom:8,letterSpacing:2}}>LIVE — Voice + Robotics ER</div>
+        <div style={{fontSize:10,color:'#1f2937',marginBottom:24,fontFamily:'IBM Plex Mono'}}>🎙 Live API = voce · 🤖 Robotics ER 1.6 = execuție</div>
+        <input type="password" value={apiKey} onChange={e=>setApiKey(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')saveKey();}}
+          placeholder="Gemini API Key" style={{width:'100%',background:'#111827',border:'1.5px solid #1f2937',color:'#e2e8f0',borderRadius:12,padding:'14px 18px',fontSize:14,fontFamily:'IBM Plex Mono',outline:'none',marginBottom:16}}/>
+        <button onClick={saveKey} style={{width:'100%',background:'linear-gradient(135deg,#f97316,#ea580c)',border:'none',color:'#fff',borderRadius:12,padding:'14px',fontSize:15,fontWeight:700,cursor:'pointer',letterSpacing:1}}>START IRIS</button>
+        <div style={{fontSize:10,color:'#374151',marginTop:16}}>Cheia e salvată local. Nu e trimisă nicăieri în afara de Google.</div>
+      </div>
+    </div>
+  );
+  
+  return(
+    <div style={{height:'100vh',display:'flex',flexDirection:'column',background:'radial-gradient(ellipse at 50% 20%,#0f1520 0%,#06080e 60%)',overflow:'hidden'}}>
+      {/* TOP */}
+      <div style={{padding:'10px 20px',display:'flex',justifyContent:'space-between',alignItems:'center',borderBottom:'1px solid #111827',flexShrink:0}}>
+        <div style={{display:'flex',alignItems:'center',gap:12}}>
+          <span style={{fontSize:22,fontWeight:900,color:'#f97316',letterSpacing:3}}>IRIS</span>
+          <span style={{fontSize:11,color:'#374151',fontWeight:500,letterSpacing:1}}>LIVE + ROBOTICS</span>
+          <div style={{width:8,height:8,borderRadius:'50%',background:connected?'#10b981':'#ef4444',boxShadow:connected?'0 0 8px #10b981':'0 0 8px #ef4444'}}/>
+          {sessionActive&&<span style={{fontSize:9,color:'#10b981',fontWeight:600,letterSpacing:1}}>● SESSION</span>}
+          {roboticsBusy&&<span style={{fontSize:9,color:'#a855f7',fontWeight:600,letterSpacing:1,animation:'pulse 1s infinite'}}>● ROBOTICS</span>}
+        </div>
+        <div style={{display:'flex',gap:8}}>
+          {!sessionActive?<button onClick={startSession} disabled={!connected} style={{background:connected?'linear-gradient(135deg,#f97316,#ea580c)':'#1f2937',border:'none',color:connected?'#fff':'#374151',borderRadius:10,padding:'8px 20px',fontSize:12,fontWeight:700,cursor:connected?'pointer':'not-allowed',letterSpacing:1}}>▶ START</button>
+          :<button onClick={endSession} style={{background:'#7f1d1d',border:'none',color:'#fca5a5',borderRadius:10,padding:'8px 20px',fontSize:12,fontWeight:700,cursor:'pointer',letterSpacing:1}}>■ END</button>}
+          <button onClick={()=>{setMessages([]);}} style={{background:'#1f2937',border:'none',color:'#4b5563',borderRadius:8,padding:'6px 10px',fontSize:9,cursor:'pointer',fontFamily:'IBM Plex Mono'}}>CLR</button>
+          <button onClick={()=>{localStorage.removeItem('iris_gemini_key');setKeySet(false);endSession();}} style={{background:'#1f2937',border:'none',color:'#4b5563',borderRadius:8,padding:'6px 10px',fontSize:9,cursor:'pointer'}}>🔑</button>
+        </div>
+      </div>
+      
+      {/* MAIN */}
+      <div style={{flex:1,display:'flex',overflow:'hidden',minHeight:0}}>
+        {/* LEFT: Face */}
+        <div style={{flex:'0 0 320px',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:'20px 16px',gap:16,borderRight:'1px solid #111827',position:'relative'}}>
+          <div style={{position:'absolute',width:300,height:300,borderRadius:'50%',background:`radial-gradient(circle,${irisState==='acting'?'#10b98110':irisState==='thinking'?'#a855f710':'#f9731610'} 0%,transparent 70%)`,transition:'background 1s',animation:speaking?'breathe 2s ease infinite':'none'}}/>
+          <div style={{position:'relative',zIndex:1,animation:irisState==='idle'&&!sessionActive?'float 4s ease-in-out infinite':'none'}}>
+            <IrisEyes state={irisState} speaking={speaking} listening={isListening&&sessionActive}/>
+          </div>
+          <Waveform active={speaking||(isListening&&sessionActive)} color={isListening&&!speaking?'#f97316':speaking?'#0ea5e9':'#374151'}/>
+          <div style={{fontSize:12,fontWeight:600,letterSpacing:2,textTransform:'uppercase',color:irisState==='error'?'#ef4444':irisState==='acting'?'#10b981':isListening&&sessionActive&&!speaking?'#f97316':speaking?'#0ea5e9':'#374151',transition:'color .3s'}}>
+            {!sessionActive?'OFFLINE':speaking?'VORBESC':roboticsBusy?'ROBOTICS':muted?'MUTED':isListening?'ASCULT':irisState==='acting'?'EXECUT':'IRIS'}
+          </div>
+          {statusText&&<div style={{fontSize:10,color:'#6b7280',fontFamily:'IBM Plex Mono',textAlign:'center',maxWidth:260,animation:'slideUp .3s ease'}}>{statusText}</div>}
+          <div style={{position:'absolute',bottom:16,display:'flex',gap:16,fontSize:9,color:'#1f2937',fontFamily:'IBM Plex Mono'}}>
+            <span>🎙 Live API</span>
+            <span>🤖 Robotics ER 1.6</span>
+          </div>
+        </div>
+        
+        {/* CENTER: Camera */}
+        <div style={{flex:'1 1 auto',display:'flex',flexDirection:'column',minWidth:0}}>
+          <div style={{padding:'8px 12px',borderBottom:'1px solid #111827',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <span style={{fontSize:10,color:'#374151',fontWeight:600,letterSpacing:1}}>CAMERA FEED</span>
+            <div style={{display:'flex',gap:12,alignItems:'center'}}>
+              {cameraOn&&<span style={{fontSize:9,color:'#10b981',fontWeight:600}}>● LIVE</span>}
+              <span style={{fontSize:8,color:'#1f2937',fontFamily:'IBM Plex Mono'}}>local only — fără video streaming</span>
+            </div>
+          </div>
+          <div style={{flex:1,position:'relative',background:'#000',overflow:'hidden',display:'flex',alignItems:'center',justifyContent:'center'}}>
+            {cameraOn?(<div style={{position:'relative',width:'100%',maxHeight:'100%',aspectRatio:'16 / 9'}}>
+              <img src={BRIDGE+"/video_feed"} style={{width:'100%',height:'100%',objectFit:'fill',display:'block'}} alt="Camera"/>
+              <ActionOverlay target={activeTarget}/>
+            </div>)
+            :(<div style={{color:'#1f2937',fontSize:13,textAlign:'center'}}><div style={{fontSize:40,marginBottom:8}}>📷</div>{connected?'Camera pornește...':'Pornește iris_bridge.py'}</div>)}
+          </div>
+        </div>
+        
+        {/* RIGHT: Chat */}
+        <div style={{flex:'0 0 310px',display:'flex',flexDirection:'column',borderLeft:'1px solid #111827'}}>
+          <div style={{padding:'8px 12px',borderBottom:'1px solid #111827'}}><span style={{fontSize:10,color:'#374151',fontWeight:600,letterSpacing:1}}>CONVERSAȚIE</span></div>
+          <div ref={chatRef} style={{flex:1,overflowY:'auto',padding:'10px 12px',display:'flex',flexDirection:'column',gap:8}}>
+            {messages.length===0&&<div style={{textAlign:'center',padding:'40px 16px',color:'#1f2937'}}><div style={{fontSize:13,marginBottom:8}}>Salut! Sunt IRIS 🤖</div><div style={{fontSize:11,color:'#374151'}}>{sessionActive?'Vorbește-mi!':'Apasă START'}</div><div style={{fontSize:9,color:'#1f2937',marginTop:8,fontFamily:'IBM Plex Mono'}}>🎙 Voce prin Live API<br/>🤖 Execuție prin Robotics ER 1.6</div></div>}
+            {messages.map((m,i)=>{
+              if(m.role==='user')return(<div key={i} style={{alignSelf:'flex-end',maxWidth:'88%',animation:'slideUp .2s'}}><div style={{background:'#1e3a5f',borderRadius:'14px 14px 4px 14px',padding:'9px 14px',fontSize:12,color:'#e2e8f0',fontFamily:'IBM Plex Mono',lineHeight:1.5}}>{m.text}</div></div>);
+              if(m.role==='iris')return(<div key={i} style={{alignSelf:'flex-start',maxWidth:'88%',animation:'slideUp .2s'}}><div style={{background:'linear-gradient(135deg,#1a0f00,#261500)',border:'1px solid #3d2200',borderRadius:'14px 14px 14px 4px',padding:'9px 14px',fontSize:12,color:'#fbbf24',fontFamily:'IBM Plex Mono',lineHeight:1.5}}>{m.text}</div></div>);
+              if(m.role==='system')return(<div key={i} style={{fontSize:10,fontFamily:'IBM Plex Mono',padding:'6px 10px',background:'#0d0d1a',borderLeft:'2px solid #a855f7',borderRadius:6,color:'#a855f7'}}>{m.text}</div>);
+              if(m.role==='action')return(<div key={i} style={{fontSize:10,fontFamily:'IBM Plex Mono',padding:'4px 10px',background:'#0a1a0d',borderLeft:'2px solid #10b981',borderRadius:6}}><span style={{color:'#10b981',fontWeight:700}}>⚡ {m.name}</span>{m.args&&Object.keys(m.args).length>0&&<span style={{color:'#4b5563',fontSize:9}}> ({Object.entries(m.args).map(([k,v])=>`${k}:${typeof v==='number'?Math.round(v):v}`).join(', ')})</span>}</div>);
+              if(m.role==='result')return(<div key={i} style={{fontSize:9,fontFamily:'IBM Plex Mono',padding:'3px 10px',color:m.ok?'#059669':'#ef4444',borderLeft:`2px solid ${m.ok?'#059669':'#ef4444'}`,borderRadius:6,background:m.ok?'#051a0d':'#1a0505'}}>{m.ok?'✓':'✗'} {m.name}{m.data?.actual&&` → (${m.data.actual.x},${m.data.actual.y},${m.data.actual.z})mm`}{m.data?.wrist_roll!==undefined&&` wr=${m.data.wrist_roll}°`}</div>);
+              if(m.role==='error')return(<div key={i} style={{fontSize:10,color:'#ef4444',padding:'6px 10px',background:'#1a0505',borderRadius:6,borderLeft:'2px solid #ef4444'}}>❌ {m.text}</div>);
+              return null;
+            })}
+          </div>
+        </div>
+      </div>
+      
+      {/* BOTTOM */}
+      <div style={{padding:'12px 20px',borderTop:'1px solid #111827',display:'flex',gap:12,alignItems:'center',flexShrink:0,background:'#080b12'}}>
+        {sessionActive&&<div style={{width:12,height:12,borderRadius:'50%',background:isListening&&!muted?'#f97316':'#1f2937',boxShadow:isListening&&!muted?'0 0 12px #f97316':'none',animation:isListening&&!muted?'pulse 1.5s infinite':'none',flexShrink:0}}/>}
+        {sessionActive&&<button onClick={()=>setMuted(!muted)} style={{background:muted?'#7f1d1d':'#1f2937',border:'none',color:muted?'#fca5a5':'#6b7280',borderRadius:10,padding:'8px 14px',fontSize:11,fontWeight:700,cursor:'pointer',letterSpacing:1,flexShrink:0}}>{muted?'🔇 MUTED':'🎙 MIC ON'}</button>}
+        <input type="text" value={inputText} onChange={e=>setInputText(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')sendText();}}
+          placeholder={sessionActive?"Text backup (vorbește direct!)...":"Start session first"} disabled={!sessionActive}
+          style={{flex:1,background:'#111827',border:'1.5px solid #1f2937',color:'#e2e8f0',borderRadius:14,padding:'12px 18px',fontSize:14,fontFamily:'Outfit',outline:'none',letterSpacing:.3}}/>
+        <button onClick={sendText} disabled={!sessionActive||!inputText.trim()} style={{background:inputText.trim()?'linear-gradient(135deg,#f97316,#ea580c)':'#1f2937',border:'none',color:inputText.trim()?'#fff':'#374151',borderRadius:14,padding:'12px 24px',fontSize:13,cursor:'pointer',fontWeight:700,letterSpacing:1,flexShrink:0}}>SEND</button>
+      </div>
+    </div>
+  );
+}
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
