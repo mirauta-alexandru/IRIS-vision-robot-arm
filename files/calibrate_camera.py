@@ -399,4 +399,4 @@ for r in range(COVERAGE_GRID[0]):
         status = "✓" if coverage_counts[r, c] >= 2 else "⚠" if coverage_counts[r, c] >= 1 else "✗"
         print(f"    {status} {get_zone_label(r, c)}: {coverage_counts[r, c]} captures")
 print()
-print("Next: run iris_vision.py — it will auto-undistort using these maps.")
+print("Next: run iris_vision_v3.py — it will auto-undistort using these maps.")
