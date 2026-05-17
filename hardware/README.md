@@ -36,7 +36,7 @@ Custom changes include:
 - enlarged gripper opening;
 - base wire-protection support;
 - 608 and 6203 bearing integration;
-- custom PSU enclosure.
+- custom PSU enclosure, with the OpenSCAD source in `hardware/hp_psu_enclosure.scad`.
 
 ## Power
 
