@@ -2,13 +2,104 @@
 
 [Versiunea în română](README.ro.md)
 
-![IRIS GitHub social preview](assets/github-open-graph.png)
+![IRIS logo](assets/iris-logo-banner.png)
 
 **IRIS** stands for **Intelligent Robotic Interactive System**: an open-source, AI-powered 6-DOF robotic arm built to see objects on a table, understand natural language commands, plan manipulation steps, and move a physical arm through computer vision, calibration, inverse kinematics, and ESP32/PCA9685 servo control.
 
 IRIS is not designed as a robot that only replays pre-programmed motions. The goal is to let an AI system receive a new command, inspect the scene in real time, decide what needs to happen, and control the arm through structured functions.
 
 [Project presentation](docs/prezentare-iris.pdf)
+
+## Build Overview
+
+To build IRIS from scratch, follow the project in this order:
+
+1. Print and assemble the robotic arm.
+2. Install the electronics: ESP32, PCA9685, servos, power supply, and common ground.
+3. Connect a fixed overhead camera.
+4. Install the Python software.
+5. Calibrate the camera intrinsics.
+6. Calibrate the robot workspace with the ChArUco board.
+7. Start the bridge and open the live interface.
+8. Test manual movement before running autonomous AI tasks.
+
+The 3D-printable parts and hardware files belong in the [hardware](hardware) folder. The current repository already includes hardware notes and the custom PSU enclosure source; the full printable arm files will be added there later.
+
+Assembly reference video:
+[IRIS / 6-DOF arm assembly video](https://www.youtube.com/watch?v=CHV36hu9z3E)
+
+## Hardware Needed
+
+Main parts:
+
+- 3D-printed 6-DOF robotic arm parts;
+- ESP32 WROOM-32D;
+- PCA9685 16-channel PWM servo driver;
+- hobby servos for the arm joints and gripper;
+- high-current 5V power supply for the servos;
+- USB or phone camera mounted rigidly above the workspace;
+- ChArUco calibration board, printed flat and mounted on a rigid surface;
+- jumper wires, servo extensions, screws, bearings, and mechanical fasteners.
+
+Important electrical notes:
+
+- Power the servos from the external 5V supply, not from the ESP32.
+- Connect ESP32 GND, PCA9685 GND, and power-supply GND together.
+- ESP32 talks to the PCA9685 through I2C: `GPIO21 -> SDA`, `GPIO22 -> SCL`.
+- Test one servo at a time before moving the full arm.
+
+## Run the Software
+
+Clone the repository:
+
+```bash
+git clone https://github.com/mirauta-alexandru/IRIS-vision-robot-arm.git
+cd IRIS-vision-robot-arm
+```
+
+Create a virtual environment and install dependencies:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+Set your Gemini API key:
+
+```bash
+export GEMINI_API_KEY="your-key-here"
+```
+
+Calibrate the camera:
+
+```bash
+python files/calibrate_camera.py
+```
+
+Calibrate the robot workspace:
+
+```bash
+python files/iris_vision_v3.py
+```
+
+Start the bridge:
+
+```bash
+python files/iris_bridge.py
+```
+
+Open the live interface:
+
+```text
+http://localhost:8765/live
+```
+
+Optional manual gamepad control:
+
+```bash
+python files/iris_gamepad.py
+```
 
 ## What IRIS Is
 
@@ -75,7 +166,7 @@ docs/                      Architecture, setup, calibration, and project deck
 assets/                    Repository images and social preview assets
 ```
 
-## Hardware
+## Hardware Details
 
 IRIS uses a 6-DOF 3D-printed robotic arm based on MakerWorld design #1134925 by Emre Kalem, with several custom modifications:
 
@@ -116,7 +207,7 @@ Set your API key:
 export GEMINI_API_KEY="your-key-here"
 ```
 
-## Quick Start
+## Quick Start Checklist
 
 1. Calibrate the camera intrinsics:
 

@@ -2,11 +2,104 @@
 
 [English version](README.md)
 
+![Logo IRIS](assets/iris-logo-banner.png)
+
 **IRIS** vine de la **Intelligent Robotic Interactive System**: un braț robotic cu inteligență artificială și 6 grade de libertate, construit pentru a vedea obiecte pe masă, a înțelege comenzi naturale și a le executa fizic printr-o combinație de viziune, calibrare, cinematică inversă și control pe ESP32.
 
 Proiectul nu este gândit ca un robot cu mișcări preprogramate rigid. Ideea lui IRIS este să primească o comandă nouă, să analizeze scena în timp real, să planifice pașii și să controleze brațul prin funcții structurate.
 
 [Prezentarea proiectului](docs/prezentare-iris.pdf)
+
+## Ordinea de Construire
+
+Ca să construiești IRIS de la zero, urmează proiectul în ordinea asta:
+
+1. Printează 3D și asamblează brațul robotic.
+2. Montează electronica: ESP32, PCA9685, servo-uri, alimentare și GND comun.
+3. Montează o cameră fixă deasupra spațiului de lucru.
+4. Instalează software-ul Python.
+5. Calibrează camera.
+6. Calibrează spațiul de lucru cu placa ChArUco.
+7. Pornește bridge-ul și deschide interfața live.
+8. Testează mișcarea manuală înainte de task-uri autonome cu AI.
+
+Piesele care trebuie printate 3D și fișierele hardware trebuie puse în folderul [hardware](hardware). Repo-ul conține deja notițe hardware și carcasa pentru sursa ATX; fișierele complete de print pentru braț vor fi adăugate acolo mai târziu.
+
+Video de referință pentru asamblare:
+[video asamblare braț 6-DOF](https://www.youtube.com/watch?v=CHV36hu9z3E)
+
+## Piese Necesare
+
+Piese principale:
+
+- piesele printate 3D pentru brațul robotic 6-DOF;
+- ESP32 WROOM-32D;
+- driver PWM PCA9685 cu 16 canale;
+- servo-uri hobby pentru articulații și clește;
+- sursă 5V cu curent mare pentru servo-uri;
+- cameră USB sau cameră de telefon montată rigid deasupra mesei;
+- placă ChArUco printată drept și lipită pe o suprafață rigidă;
+- fire, extensii servo, șuruburi, rulmenți și elemente mecanice de prindere.
+
+Note electrice importante:
+
+- Alimentează servo-urile din sursa externă de 5V, nu din ESP32.
+- Leagă împreună GND de la ESP32, PCA9685 și sursa de alimentare.
+- ESP32 comunică cu PCA9685 prin I2C: `GPIO21 -> SDA`, `GPIO22 -> SCL`.
+- Testează câte un servo pe rând înainte să miști tot brațul.
+
+## Cum Rulezi Software-ul
+
+Clonează repo-ul:
+
+```bash
+git clone https://github.com/mirauta-alexandru/IRIS-vision-robot-arm.git
+cd IRIS-vision-robot-arm
+```
+
+Creează mediul virtual și instalează dependențele:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+Setează cheia Gemini:
+
+```bash
+export GEMINI_API_KEY="cheia-ta-aici"
+```
+
+Calibrează camera:
+
+```bash
+python files/calibrate_camera.py
+```
+
+Calibrează spațiul de lucru al robotului:
+
+```bash
+python files/iris_vision_v3.py
+```
+
+Pornește bridge-ul:
+
+```bash
+python files/iris_bridge.py
+```
+
+Deschide interfața live:
+
+```text
+http://localhost:8765/live
+```
+
+Control manual opțional cu manetă:
+
+```bash
+python files/iris_gamepad.py
+```
 
 ## Ce Este IRIS
 
@@ -72,7 +165,7 @@ hardware/                  Note pentru partea fizică și piese personalizate
 docs/                      Documentație, configurare, calibrare și prezentare
 ```
 
-## Partea Fizică
+## Detalii Hardware
 
 IRIS folosește un braț robotic 6-DOF bazat pe modelul MakerWorld #1134925 de Emre Kalem, dar cu modificări proprii:
 
@@ -113,7 +206,7 @@ Setare cheie API:
 export GEMINI_API_KEY="cheia-ta-aici"
 ```
 
-## Pornire Rapidă
+## Listă Rapidă de Pornire
 
 1. Calibrează camera:
 
