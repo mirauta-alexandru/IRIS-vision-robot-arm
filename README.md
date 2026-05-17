@@ -1,103 +1,108 @@
-# IRIS - Braț Robotic cu Viziune
+# IRIS Vision Robot Arm
 
-**IRIS** vine de la **Intelligent Robotic Interactive System**: un braț robotic cu inteligență artificială și 6 grade de libertate, construit pentru a vedea obiecte pe masă, a înțelege comenzi naturale și a le executa fizic printr-o combinație de viziune, calibrare, cinematică inversă și control pe ESP32.
+[Versiunea în română](README.ro.md)
 
-Proiectul nu este gândit ca un robot cu mișcări preprogramate rigid. Ideea lui IRIS este să primească o comandă nouă, să analizeze scena în timp real, să planifice pașii și să controleze brațul prin funcții structurate.
+![IRIS GitHub social preview](assets/github-open-graph.png)
 
-[Prezentarea proiectului](docs/prezentare-iris.pdf)
+**IRIS** stands for **Intelligent Robotic Interactive System**: an open-source, AI-powered 6-DOF robotic arm built to see objects on a table, understand natural language commands, plan manipulation steps, and move a physical arm through computer vision, calibration, inverse kinematics, and ESP32/PCA9685 servo control.
 
-## Ce Este IRIS
+IRIS is not designed as a robot that only replays pre-programmed motions. The goal is to let an AI system receive a new command, inspect the scene in real time, decide what needs to happen, and control the arm through structured functions.
 
-IRIS este un sistem robotic autonom, format dintr-un braț printat 3D, o cameră montată deasupra spațiului de lucru, un strat de inteligență artificială pentru raționament, calibrare ChArUco pentru transformarea pixelilor în coordonate reale și un sistem ESP32/PCA9685 pentru mișcarea servo-urilor.
+[Project presentation](docs/prezentare-iris.pdf)
 
-Pe scurt, IRIS:
+## What IRIS Is
 
-- ascultă și răspunde printr-o interfață în timp real;
-- vede scena prin cameră;
-- detectează obiecte și le transformă poziția din pixeli în coordonate reale;
-- planifică pași de manipulare;
-- rezolvă cinematica inversă cu IKPy;
-- trimite unghiuri către ESP32;
-- controlează servo-urile prin modulul PCA9685;
-- poate fi extins cu funcții noi fără a rescrie tot sistemul.
+IRIS is an autonomous robotics prototype made from a 3D-printed 6-DOF arm, an overhead camera, an AI reasoning layer, ChArUco-based workspace calibration, an IKPy inverse-kinematics stack, and an ESP32/PCA9685 low-level control path.
 
-## Arhitectură
+In practical terms, IRIS can:
 
-```text
-Strat 3 - Voce și auz
-  Interfață în timp real, microfon, răspuns vocal, comenzi naturale în română
+- listen and respond through a real-time live interface;
+- see the workspace through a camera;
+- detect objects and convert image pixels into robot coordinates;
+- plan manipulation steps;
+- solve inverse kinematics with IKPy;
+- send joint targets to an ESP32;
+- drive hobby servos through a PCA9685 PWM module;
+- be extended with new robot functions without rewriting the whole system.
 
-Strat 2 - Creier
-  Gemini Robotics / raționament întrupat, planificare și apeluri de funcții
-
-Strat 2 - Ochi
-  Cameră, calibrare ChArUco, conversie pixeli -> coordonate robot
-
-Strat 2 - Cerebel
-  IKPy, model URDF, cinematică inversă și generare unghiuri servo
-
-Strat 1 - Coloană
-  ESP32, protocol serial, PCA9685 și PWM stabil pentru servo-uri
-
-Strat 0 - Corp
-  Braț robotic 6-DOF printat 3D, clește modificat, rulmenți și sursă ATX
-```
-
-Documentație tehnică: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-
-## Cum Funcționează
-
-1. Utilizatorul dă o comandă naturală, de exemplu: „ridică cubul verde”.
-2. Camera trimite un cadru către stratul de viziune.
-3. Sistemul detectează obiectul și calculează unde se află pe masă.
-4. Coordonatele sunt transformate în spațiul robotului prin calibrarea ChArUco.
-5. Inteligența artificială planifică pașii: apropiere, aliniere, coborâre, prindere, ridicare.
-6. IKPy transformă ținta XYZ în unghiuri pentru articulații.
-7. ESP32 primește comenzile și controlează servo-urile prin PCA9685.
-8. Camera verifică rezultatul și permite ajustări.
-
-## Structura Repo-ului
+## Architecture
 
 ```text
-files/iris_bridge.py       Puntea principală: unelte IA, IK, cameră și serial
-files/iris_live.html       Interfața în timp real pentru voce și control
-files/iris_visualizer.html Vizualizator în navigator web pentru cameră, braț și comenzi
-files/iris_vision_v3.py    Calibrare a spațiului de lucru cu placă ChArUco
-files/calibrate_camera.py  Calibrare intrinsecă pentru cameră
-files/iris_arm.urdf        Model cinematic folosit de IKPy
-files/iris_gamepad.py      Control manual opțional cu manetă
-hardware/                  Note pentru partea fizică și piese personalizate
-docs/                      Documentație, configurare, calibrare și prezentare
+Layer 3 - Voice and Hearing
+  Live interface, microphone, spoken responses, natural-language commands
+
+Layer 2 - Brain
+  Gemini Robotics-style embodied reasoning, planning, and function calling
+
+Layer 2 - Eyes
+  Camera feed, ChArUco calibration, pixel-to-robot coordinate conversion
+
+Layer 2 - Cerebellum
+  IKPy, URDF model, inverse kinematics, servo target generation
+
+Layer 1 - Spine
+  ESP32, serial protocol, PCA9685, stable PWM output for servos
+
+Layer 0 - Body
+  3D-printed 6-DOF robotic arm, modified gripper, bearings, ATX power supply
 ```
 
-## Partea Fizică
+Technical notes: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
-IRIS folosește un braț robotic 6-DOF bazat pe modelul MakerWorld #1134925 de Emre Kalem, dar cu modificări proprii:
+## How It Works
 
-- clește mărit, pentru obiecte mai mari decât permitea modelul inițial;
-- suport de protecție pentru fire în baza brațului;
-- rulmenți 608 și 6203 integrați în articulații pentru mișcare mai lină;
-- carcasă dedicată pentru sursa ATX HP PS-6241-4HP;
-- alimentare servo dintr-o sursă recuperată de calculator, 5V / 17A;
-- ESP32 WROOM-32D pentru control la nivel jos;
-- PCA9685 pentru 16 canale PWM stabile la 50 Hz.
+1. The user gives a natural command, such as "pick up the green cube".
+2. The camera sends a frame to the vision layer.
+3. The system detects the target object and estimates its position on the table.
+4. ChArUco calibration converts that image position into robot workspace coordinates.
+5. The AI planner breaks the task into steps: approach, align, descend, grasp, lift.
+6. IKPy converts the XYZ target into joint angles.
+7. The ESP32 receives commands and drives the servos through the PCA9685 module.
+8. The camera can be used again to verify the result and make small corrections.
 
-Regula electrică importantă: **GND comun între ESP32, PCA9685 și sursa de alimentare**.
+## Repository Layout
 
-## Program și Dependențe
+```text
+files/iris_bridge.py       Main bridge: AI tools, IK, camera, HTTP, serial control
+files/iris_live.html       Real-time voice and control interface
+files/iris_visualizer.html Browser visualizer for camera, arm state, and commands
+files/iris_vision_v3.py    ChArUco workspace calibration
+files/calibrate_camera.py  Camera intrinsics calibration
+files/iris_arm.urdf        Kinematic model used by IKPy
+files/iris_gamepad.py      Optional manual gamepad control
+hardware/                  Hardware notes and custom printable parts
+docs/                      Architecture, setup, calibration, and project deck
+assets/                    Repository images and social preview assets
+```
 
-Cerințe principale:
+## Hardware
+
+IRIS uses a 6-DOF 3D-printed robotic arm based on MakerWorld design #1134925 by Emre Kalem, with several custom modifications:
+
+- enlarged gripper opening for larger demo objects;
+- wire-protection support inside the base;
+- 608 and 6203 bearings in selected joints for smoother movement;
+- custom enclosure for a recovered HP PS-6241-4HP ATX power supply;
+- 5V / 17A servo power rail from the recovered PSU;
+- ESP32 WROOM-32D as the low-level controller;
+- PCA9685 16-channel PWM module at 50 Hz.
+
+Important electrical rule: **ESP32 GND, PCA9685 GND, and PSU GND must be common**.
+
+## Software Requirements
+
+Main requirements:
 
 - Python 3.11+
-- OpenCV cu suport ArUco/ChArUco
+- OpenCV with ArUco/ChArUco support
 - IKPy
 - NumPy / SciPy
 - PySerial
 - Requests
-- Pygame pentru controlul opțional cu manetă
-- o cheie API Gemini pentru stratul de inteligență artificială
+- Pygame for optional gamepad control
+- a Gemini API key for the AI layer
 
-Instalare:
+Install dependencies:
 
 ```bash
 python3 -m venv .venv
@@ -105,94 +110,94 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Setare cheie API:
+Set your API key:
 
 ```bash
-export GEMINI_API_KEY="cheia-ta-aici"
+export GEMINI_API_KEY="your-key-here"
 ```
 
-## Pornire Rapidă
+## Quick Start
 
-1. Calibrează camera:
+1. Calibrate the camera intrinsics:
 
    ```bash
    python files/calibrate_camera.py
    ```
 
-2. Calibrează spațiul de lucru cu placa ChArUco:
+2. Calibrate the robot workspace with the ChArUco board:
 
    ```bash
    python files/iris_vision_v3.py
    ```
 
-   Așază placa pe masă, asigură-te că este văzută complet, așteaptă suficiente colțuri detectate, apoi apasă `SPACE` și `S`.
+   Place the board on the table, make sure it is fully visible, wait for enough detected corners, then press `SPACE` and `S`.
 
-3. Pornește bridge-ul:
+3. Start the bridge:
 
    ```bash
    python files/iris_bridge.py
    ```
 
-4. Deschide interfața în timp real:
+4. Open the live interface:
 
    ```text
    http://localhost:8765/live
    ```
 
-## Calibrare
+## Calibration
 
-IRIS folosește ca bază publică o calibrare simplă și stabilă:
+The public baseline uses a simple and stable calibration flow:
 
 ```text
-intrinseci cameră -> ChArUco solvePnP -> transformare cameră-robot -> intersecție rază-plan
+camera intrinsics -> ChArUco solvePnP -> camera-to-robot transform -> ray-plane intersection
 ```
 
-Am evitat să păstrăm ca bază corecțiile experimentale cu marker pe clește sau hărți manuale de eroare, pentru că pot amplifica problemele mecanice: joc în articulații, flex, marker mișcat, poziții măsurate imperfect sau offseturi locale.
+Earlier experiments used gripper-marker correction and manual residual maps. They are useful for research, but they can also amplify mechanical issues such as backlash, flex, marker movement, imperfect measurements, or local offsets. For the public baseline, board-only calibration is easier to understand, reproduce, and debug.
 
-Ghid complet: [docs/CALIBRATION.md](docs/CALIBRATION.md)
+Full guide: [docs/CALIBRATION.md](docs/CALIBRATION.md)
 
-## De Ce IRIS E Diferit
+## Why IRIS Is Different
 
-IRIS este un pas spre roboți care nu repetă doar mișcări programate. Sistemul vede, ascultă, gândește, vorbește și acționează. Inteligența artificială nu doar descrie ce ar trebui făcut, ci controlează un corp fizic care încearcă să facă acel lucru în lumea reală.
+IRIS is a step toward robots that do more than replay programmed motions. It sees, listens, reasons, speaks, and acts. The AI layer does not merely describe what should happen; it controls a physical system that tries to do it in the real world.
 
-Până acum, inteligența artificială a trăit mai ales în ecrane: text, imagini, cod, conversații. IRIS încearcă să ducă această inteligență în spațiul fizic: un obiect pe masă, o comandă vocală, o traiectorie planificată și o mișcare reală.
+Most AI still lives behind screens: text, images, code, conversations. IRIS explores what happens when that intelligence gets a body: an object on a table, a spoken command, a planned trajectory, and a real movement.
 
-## Stadiu
+## Project Status
 
-IRIS este un prototip activ. Funcționează ca braț robotic cu inteligență artificială real, dar precizia depinde de:
+IRIS is an active prototype. It works as a real AI-controlled robotic arm, but precision depends heavily on:
 
-- rigiditatea camerei;
-- calitatea calibrării ChArUco;
-- poziția fizică a plăcii de calibrare;
-- jocul mecanic al servo-urilor;
-- flexul brațului;
-- geometria cleștelui;
-- lumină, obiecte și fundal.
+- camera rigidity;
+- ChArUco calibration quality;
+- physical board placement;
+- servo backlash;
+- mechanical flex;
+- gripper geometry;
+- lighting, object shape, and background.
 
-Obiectivul actual este o bază cu sursă deschisă, simplă, curată și ușor de refăcut înainte de adăugarea unor straturi mai complexe de corecție sau antrenare.
+The current goal is a clean, understandable open-source baseline before adding more complex correction or training layers.
 
-## Ce Urmează
+## Roadmap
 
-Direcții posibile pentru IRIS V2:
+Possible IRIS V2 directions:
 
-- mecanică de precizie, cu actuatoare mai bune decât servo-urile hobby;
-- manipulare mai fină pentru obiecte fragile;
-- antrenare în simulare și transfer pe robotul real, în Isaac Sim sau MuJoCo;
-- model VLA dedicat, antrenat pentru politici de mișcare;
-- seturi de date proprii pentru detecție și manipulare.
+- higher-precision mechanics with better actuators than hobby servos;
+- finer manipulation for fragile objects;
+- simulation-to-real-world training in Isaac Sim or MuJoCo;
+- a dedicated VLA model trained on motion policies;
+- custom datasets for detection and manipulation.
 
-## Sursă Deschisă
+## Open Source
 
-Proiectul este public pentru oameni care vor să învețe, să construiască, să modifice și să ducă mai departe ideea unui robot AI accesibil.
+This project is public for people who want to learn, build, modify, and push forward the idea of an accessible AI robot.
 
-Dacă ai o imprimantă 3D, puțină electronică, răbdare la calibrare și curiozitate, poți să pornești de aici și să îți construiești propria versiune de IRIS.
+If you have a 3D printer, some electronics, patience for calibration, and curiosity, this repository is a starting point for building your own version of IRIS.
 
-## Licență
+## License
 
-Licența nu este aleasă încă. Adaugă un fișier `LICENSE` înainte de o lansare publică oficială.
+No license has been selected yet. Add a `LICENSE` file before an official public release.
 
-## Credite
+## Credits
 
-Creat de **Mirăuță Alexandru** și **Cardaș Codrin**.
+Created by **Mirăuță Alexandru** and **Cardaș Codrin**.
 
-Brațul mecanic este bazat pe modelul MakerWorld #1134925 de **Emre Kalem**, modificat pentru proiectul IRIS.
+The mechanical arm is based on MakerWorld design #1134925 by **Emre Kalem**, modified for the IRIS project.
