@@ -10,6 +10,16 @@ IRIS is not designed as a robot that only replays pre-programmed motions. The go
 
 [Project presentation](docs/prezentare-iris.pdf)
 
+## Version 7 Update
+
+This release focuses on the current IRIS V7 control stack:
+
+- improved Gemini Live tools for direct robot gestures such as greeting and dancing;
+- a 30-second local MP3 dance routine with beat-based speed phases. Place your local audio at `files/media/iris_dance.mp3`;
+- safer shoulder limits, with CH4 constrained to 30-160 degrees and CH5 mirrored from CH4;
+- a fresh PS4 manual controller script for direct servo testing through the bridge;
+- improved visualizer controls for PS4 mode, hello wave, and music dance routines.
+
 ## Build Overview
 
 To build IRIS from scratch, follow the project in this order:
@@ -98,7 +108,7 @@ http://localhost:8765/live
 Optional manual gamepad control:
 
 ```bash
-python files/iris_gamepad.py
+python files/iris_ps4_manual.py
 ```
 
 ## What IRIS Is
@@ -160,7 +170,8 @@ files/iris_visualizer.html Browser visualizer for camera, arm state, and command
 files/iris_vision_v3.py    ChArUco workspace calibration
 files/calibrate_camera.py  Camera intrinsics calibration
 files/iris_arm.urdf        Kinematic model used by IKPy
-files/iris_gamepad.py      Optional manual gamepad control
+files/iris_ps4_manual.py   Optional PS4 manual servo control
+files/media/              Local, git-ignored demo audio folder
 hardware/                  Hardware notes and custom printable parts
 docs/                      Architecture, setup, calibration, and project deck
 assets/                    Repository images and social preview assets

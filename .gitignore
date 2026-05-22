@@ -35,6 +35,7 @@ files/vision_detection_debug.jpg
 files/vision_correction_debug.png
 files/iris_ik_test.png
 files/iris_multi_targets.png
+files/media/*.mp3
 *.log
 
 # Local assistant handoff/planning notes

@@ -96,6 +96,9 @@ function App(){
   const audioContextRef=useRef(null);
   const audioQueueRef=useRef([]);
   const isPlayingRef=useRef(false);
+  const danceSourceRef=useRef(null);
+  const danceBufferRef=useRef(null);
+  const danceAudioTimerRef=useRef(null);
   const wsRef=useRef(null);
   const mediaStreamRef=useRef(null);
   const processorRef=useRef(null);
@@ -170,7 +173,9 @@ function App(){
                 const r=data.result||{};
                 if(data.name==='detect_objects'&&(r.objects?.[0]?.norm||r.object?.norm)){
                   const o=r.objects?.[0]||r.object;
-                  setActiveTarget({target:{x:o.norm.x,y:o.norm.y,label:o.label||'target',robot:o.robot,bbox:o.bbox_norm}});
+                  const src=o.center_source?` · ${o.center_source}`:'';
+                  const wr=o.wrist_roll_suggestion_deg!==undefined?` · wr ${o.wrist_roll_suggestion_deg}°`:'';
+                  setActiveTarget({target:{x:o.norm.x,y:o.norm.y,label:`${o.label||'target'}${src}${wr}`,robot:o.robot,bbox:o.bbox_norm}});
                 }else if(data.name==='check_target_alignment'){
                   const next={};
                   if(r.target_norm)next.target={x:r.target_norm.x,y:r.target_norm.y,label:'target',robot:r.target};
@@ -220,6 +225,62 @@ function App(){
       return{success:false,description:"Camera indisponibilă."};
     }
   },[]);
+
+  const waveHello=useCallback(async()=>{
+    try{
+      const r=await fetch(BRIDGE+"/hello",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({})});
+      const d=await r.json();
+      return{success:d.ok!==false,running:Boolean(d.running),message:"IRIS salută publicul."};
+    }catch(err){
+      return{success:false,error:err.message};
+    }
+  },[]);
+
+  const playDanceAudio=useCallback(async()=>{
+    if(danceAudioTimerRef.current)clearTimeout(danceAudioTimerRef.current);
+    if(danceSourceRef.current){
+      try{danceSourceRef.current.stop();}catch(e){}
+      danceSourceRef.current=null;
+    }
+    initAudio();
+    const ctx=audioContextRef.current;
+    if(!ctx)return false;
+    if(ctx.state==='suspended')await ctx.resume().catch(()=>{});
+    if(!danceBufferRef.current){
+      const res=await fetch(BRIDGE+"/media/iris_dance.mp3");
+      const arr=await res.arrayBuffer();
+      danceBufferRef.current=await ctx.decodeAudioData(arr.slice(0));
+    }
+    const source=ctx.createBufferSource();
+    source.buffer=danceBufferRef.current;
+    const gain=ctx.createGain();
+    gain.gain.value=0.95;
+    source.connect(gain);
+    gain.connect(ctx.destination);
+    danceSourceRef.current=source;
+    source.onended=()=>{if(danceSourceRef.current===source)danceSourceRef.current=null;};
+    source.start(0,0,30);
+    danceAudioTimerRef.current=setTimeout(()=>{
+      try{source.stop();}catch(e){}
+      if(danceSourceRef.current===source)danceSourceRef.current=null;
+    },31000);
+    return true;
+  },[initAudio]);
+
+  const danceToMusic=useCallback(async()=>{
+    try{
+      const audioStarted=await playDanceAudio();
+      const r=await fetch(BRIDGE+"/dance/start",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({duration_seconds:30,bpm:100.25})
+      });
+      const d=await r.json();
+      return{success:d.ok!==false,running:Boolean(d.running),audio_started:Boolean(audioStarted),duration_seconds:30,message:"IRIS dansează 30 de secunde pe muzică."};
+    }catch(err){
+      return{success:false,error:err.message};
+    }
+  },[playDanceAudio]);
   
   // ═══════════════════════════════════
   //  LIVE API SESSION (voice only — NO video streaming!)
@@ -253,7 +314,15 @@ Read it and tell the user what happened.
    Use when user asks "ce vezi?", to check results, or to answer visual questions.
    This one IS blocking — you wait for the answer, then tell the user.
 
-3. go_home() — Arm to rest position.
+3. wave_hello() — DIRECT Live gesture, not Robotics. Use this when the user greets you
+   ("salut", "bună", "hello", "hei IRIS") or asks you to greet/wave to the audience.
+   Say a short greeting, then call wave_hello. Do NOT use execute_robot_task for greetings.
+
+4. dance_to_music() — DIRECT Live dance gesture, not Robotics. Use when the user asks you
+   to dance, play the dance, dance on the song/music/beat, or "dansează". It starts
+   the 30-second MP3 dance routine. Do NOT use execute_robot_task for dancing.
+
+5. go_home() — Arm to rest position.
 
 ═══ HOW TO BEHAVE ═══
 - ALWAYS say something before calling a tool: "Bun, mă duc să iau cubul!"
@@ -270,6 +339,8 @@ Read it and tell the user what happened.
           {name:"cancel_robot_task",description:"STOP the current robot task immediately. Arm goes home, gripper opens. Use when the user changes their mind or says stop/oprește/nu mai vreau.",parameters:{type:"OBJECT",properties:{}}},
           {name:"get_robot_status",description:"Check what Robotics ER is currently doing. Returns busy/idle status and last action. Use to tell the user what's happening.",parameters:{type:"OBJECT",properties:{}}},
           {name:"look_at_scene",description:"Take a camera snapshot and ask Robotics ER to describe what it sees. Use when user asks what's visible or to check results.",parameters:{type:"OBJECT",properties:{question:{type:"STRING",description:"What to look for, e.g. 'ce obiecte sunt pe masă?', 'am prins obiectul?'"}},required:["question"]}},
+          {name:"wave_hello",description:"DIRECT Gemini Live greeting gesture. Call this when the user says salut/bună/hello/hei IRIS or asks IRIS to greet the audience. Do not route greetings through Robotics.",parameters:{type:"OBJECT",properties:{}}},
+          {name:"dance_to_music",description:"DIRECT Gemini Live dance gesture. Call this when the user asks IRIS to dance, dance on music, start the song/dance, or says dansează. Starts the 30-second MP3 dance routine. Do not route dancing through Robotics.",parameters:{type:"OBJECT",properties:{}}},
           {name:"go_home",description:"Send robot arm to home/rest position. Opens gripper and raises arm."},
         ]}],
       }}));
@@ -340,6 +411,18 @@ Read it and tell the user what happened.
             res=await describeScene(fc.args?.question);
             setStatusText('');
             setIrisState('idle');
+          }else if(fc.name==='wave_hello'){
+            setIrisState('acting');
+            setStatusText('👋 Salut publicul...');
+            res=await waveHello();
+            setStatusText('');
+            setIrisState('idle');
+          }else if(fc.name==='dance_to_music'){
+            setIrisState('acting');
+            setStatusText('🎵 Dansez pe muzică...');
+            res=await danceToMusic();
+            setStatusText('');
+            setIrisState('idle');
           }else if(fc.name==='go_home'){
             setIrisState('acting');
             setStatusText('🏠 Merg acasă...');
@@ -360,7 +443,7 @@ Read it and tell the user what happened.
     };
     ws.onerror=()=>{setIrisState('error');setStatusText('WebSocket error');};
     ws.onclose=()=>{setSessionActive(false);setIrisState('idle');stopAll();};
-  },[apiKey,executeRoboticsTask,describeScene,playChunk,initAudio]);
+  },[apiKey,executeRoboticsTask,describeScene,waveHello,danceToMusic,playChunk,initAudio]);
   
   // Mic capture → PCM 16kHz (NO video streaming!)
   const startMic=useCallback(async()=>{
@@ -385,6 +468,8 @@ Read it and tell the user what happened.
   const stopAll=useCallback(()=>{
     if(mediaStreamRef.current){mediaStreamRef.current.getTracks().forEach(t=>t.stop());mediaStreamRef.current=null;}
     if(processorRef.current){processorRef.current.proc.disconnect();processorRef.current.src.disconnect();processorRef.current.actx.close();processorRef.current=null;}
+    if(danceAudioTimerRef.current){clearTimeout(danceAudioTimerRef.current);danceAudioTimerRef.current=null;}
+    if(danceSourceRef.current){try{danceSourceRef.current.stop();}catch(e){}danceSourceRef.current=null;}
     setIsListening(false);
   },[]);
   

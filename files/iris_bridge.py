@@ -14,6 +14,8 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 from urllib.parse import urlparse, parse_qs
 import os
+import subprocess
+import sys
 import cv2
 import base64
 
@@ -35,18 +37,117 @@ PLATFORM_HEIGHT_MM = 23  # mm — robot base is this much higher than table surf
 # ─── Servo config (must match HTML) ───
 SERVO_CONFIG = {
     'base_rotation': {'ch': 6, 'offset': 75,  'dir':  1, 'min': 0,   'max': 180},
-    'shoulder':      {'ch': 4, 'offset': 160, 'dir': -1, 'min': 0,   'max': 160},
-    'elbow':         {'ch': 3, 'offset': 43,  'dir': -1, 'min': 20,  'max': 180},
-    'wrist_pitch':   {'ch': 2, 'offset': 83,  'dir': -1, 'min': 0,   'max': 170},
+    'shoulder':      {'ch': 4, 'offset': 160, 'dir': -1, 'min': 30,  'max': 160},
+    'elbow':         {'ch': 3, 'offset': 25,  'dir': -1, 'min': 20,  'max': 180},
+    'wrist_pitch':   {'ch': 2, 'offset': 100, 'dir': -1, 'min': 0,   'max': 170},
     'wrist_roll':    {'ch': 1, 'offset': 55,  'dir':  1, 'min': 0,   'max': 180},
 }
 JOINT_NAMES = ['base_rotation', 'shoulder', 'elbow', 'wrist_pitch', 'wrist_roll']
+BASE_Y_CENTER_DEG = 75.0
+BASE_Y_INWARD_COMPENSATION = 0.16
 
 # ─── ikpy setup ───
 import ikpy.chain
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 URDF_PATH = os.path.join(SCRIPT_DIR, "iris_arm.urdf")
+PS4_MANUAL_SCRIPT_PATH = os.path.join(SCRIPT_DIR, "iris_ps4_manual.py")
+PS4_MANUAL_LOG_PATH = os.path.join(SCRIPT_DIR, "iris_ps4_manual.log")
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+MEDIA_DIR = os.path.join(SCRIPT_DIR, "media")
+DANCE_AUDIO_PATH = os.path.join(MEDIA_DIR, "iris_dance.mp3")
+LOCAL_VENV_PYTHON = os.path.join(PROJECT_ROOT, "iris-env", "bin", "python")
+PS4_MANUAL_PYTHON = LOCAL_VENV_PYTHON if os.path.exists(LOCAL_VENV_PYTHON) else sys.executable
+ps4_manual_process = None
+ps4_manual_lock = threading.RLock()
+hello_lock = threading.Lock()
+hello_running = False
+dance_lock = threading.Lock()
+dance_running = False
+dance_stop_event = threading.Event()
+
+HELLO_POSE_A = {6: 127, 4: 79, 5: 101, 3: 125, 2: 25, 1: 51, 0: 70}
+HELLO_POSE_B = {6: 33, 4: 79, 5: 101, 3: 125, 2: 25, 1: 51, 0: 70}
+HELLO_WRIST_ROLL_SWING = (28, 78)
+HELLO_WAVE_REPETITIONS = 3
+DANCE_DEFAULT_BPM = 100.25
+DANCE_DEFAULT_DURATION_SECONDS = 30.0
+DANCE_MAX_DURATION_SECONDS = 180.0
+DANCE_HOME_POSE = {6: 75, 4: 76, 5: 104, 3: 122, 2: 36, 1: 55, 0: 25}
+DANCE_MIN_STEP_SIZE = 2.0
+DANCE_MAX_STEP_SIZE = 2.25
+DANCE_SPEED_PROFILES = {
+    "slow": (2.0, 0.018),
+    "medium": (2.1, 0.014),
+    "fast": (2.2, 0.011),
+    "hit": (2.25, 0.010),
+}
+DANCE_PHASES = [
+    {
+        "name": "intro_tang_hits",
+        "until": 4.0,
+        "speed": "slow",
+        "steps": [
+            ({6: 75, 4: 76, 5: 104, 3: 122, 2: 46, 1: 55, 0: 10}, 1.0),
+            ({6: 125, 4: 74, 5: 106, 3: 112, 2: 18, 1: 30, 0: 68}, 1.0),
+            ({6: 75, 4: 78, 5: 102, 3: 130, 2: 58, 1: 80, 0: 10}, 1.0),
+            ({6: 25, 4: 74, 5: 106, 3: 112, 2: 18, 1: 30, 0: 68}, 1.0),
+            ({6: 75, 4: 76, 5: 104, 3: 122, 2: 46, 1: 55, 0: 10}, 0.5),
+        ],
+    },
+    {
+        "name": "wide_groove",
+        "until": 12.0,
+        "speed": "medium",
+        "steps": [
+            ({6: 130, 4: 72, 5: 108, 3: 108, 2: 66, 1: 22, 0: 14}, 1.0),
+            ({6: 20, 4: 88, 5: 92, 3: 148, 2: 12, 1: 98, 0: 70}, 1.0),
+            ({6: 122, 4: 70, 5: 110, 3: 104, 2: 70, 1: 34, 0: 20}, 0.5),
+            ({6: 28, 4: 90, 5: 90, 3: 152, 2: 10, 1: 86, 0: 64}, 0.5),
+            ({6: 75, 4: 62, 5: 118, 3: 108, 2: 72, 1: 55, 0: 12}, 0.5),
+            ({6: 75, 4: 88, 5: 92, 3: 148, 2: 16, 1: 55, 0: 66}, 0.5),
+        ],
+    },
+    {
+        "name": "beat_change_hits",
+        "until": 20.0,
+        "speed": "hit",
+        "steps": [
+            ({6: 75, 4: 42, 5: 138, 3: 92, 2: 78, 1: 55, 0: 6}, 0.25),
+            ({6: 75, 4: 88, 5: 92, 3: 154, 2: 12, 1: 55, 0: 70}, 0.25),
+            ({6: 132, 4: 58, 5: 122, 3: 96, 2: 74, 1: 14, 0: 10}, 0.25),
+            ({6: 18, 4: 90, 5: 90, 3: 156, 2: 10, 1: 104, 0: 68}, 0.25),
+            ({6: 126, 4: 68, 5: 112, 3: 110, 2: 58, 1: 28, 0: 14}, 0.5),
+            ({6: 24, 4: 88, 5: 92, 3: 150, 2: 16, 1: 92, 0: 64}, 0.5),
+        ],
+    },
+    {
+        "name": "wrist_flourish",
+        "until": 24.0,
+        "speed": "fast",
+        "steps": [
+            ({6: 120, 4: 66, 5: 114, 3: 106, 2: 64, 1: 8, 0: 16}, 0.25),
+            ({6: 120, 4: 66, 5: 114, 3: 106, 2: 64, 1: 55, 0: 64}, 0.25),
+            ({6: 30, 4: 88, 5: 92, 3: 150, 2: 14, 1: 108, 0: 16}, 0.25),
+            ({6: 30, 4: 88, 5: 92, 3: 150, 2: 14, 1: 55, 0: 66}, 0.25),
+            ({6: 130, 4: 70, 5: 110, 3: 112, 2: 58, 1: 22, 0: 22}, 0.5),
+            ({6: 20, 4: 88, 5: 92, 3: 150, 2: 16, 1: 98, 0: 58}, 0.5),
+        ],
+    },
+    {
+        "name": "finale_sweep",
+        "until": 30.0,
+        "speed": "fast",
+        "steps": [
+            ({6: 135, 4: 54, 5: 126, 3: 98, 2: 72, 1: 20, 0: 12}, 0.5),
+            ({6: 15, 4: 92, 5: 88, 3: 158, 2: 10, 1: 104, 0: 68}, 0.5),
+            ({6: 127, 4: 79, 5: 101, 3: 125, 2: 25, 1: 32, 0: 18}, 0.5),
+            ({6: 33, 4: 79, 5: 101, 3: 125, 2: 25, 1: 86, 0: 62}, 0.5),
+            ({6: 75, 4: 48, 5: 132, 3: 98, 2: 76, 1: 55, 0: 8}, 0.5),
+            ({6: 75, 4: 76, 5: 104, 3: 122, 2: 36, 1: 55, 0: 25}, 0.5),
+        ],
+    },
+]
 
 iris_chain = ikpy.chain.Chain.from_urdf_file(
     URDF_PATH,
@@ -66,22 +167,55 @@ MIN_VISION_CALIB_POINTS = 12
 GRIPPER_MARKER_ID = 21
 GRIPPER_MARKER_DICT = cv2.aruco.DICT_4X4_50
 GRIPPER_MARKER_SIZE_MM = 30.0
-CUBE_BBOX_GRASP_Y_FRACTION = 0.38  # 0=top of bbox, 0.5=center; cube boxes often include too much front/table
-CUBE_GRASP_X_BIAS_MM = -24.0       # negative X = farther back toward robot base
-OBJECT_GRASP_Y_FRACTION = 0.43     # 0=top of refined object box, 0.5=center; slightly above visual center
-OBJECT_GRASP_X_BIAS_MM = -20.0     # negative X = farther back / smaller robot X
-POINT_GRASP_TOP_OFFSET_PX = -16    # upper workspace: grasp a little higher in the image
+CUBE_BBOX_GRASP_Y_FRACTION = 0.50  # V7: visual center first. Do not hide grasp offsets inside detection.
+CUBE_GRASP_X_BIAS_MM = 0.0
+OBJECT_GRASP_Y_FRACTION = 0.50
+OBJECT_GRASP_X_BIAS_MM = 0.0
+POINT_GRASP_TOP_OFFSET_PX = 0      # V7: no pixel offset until detection is visibly correct.
 POINT_GRASP_MID_OFFSET_PX = 0      # middle workspace: use Gemini's visual center
-POINT_GRASP_BOTTOM_OFFSET_PX = 18  # lower workspace: grasp lower in the image
+POINT_GRASP_BOTTOM_OFFSET_PX = 0
 POINT_GRASP_TOP_Y_NORM = 0.42
 POINT_GRASP_MID_Y_NORM = 0.60
 POINT_GRASP_BOTTOM_Y_NORM = 0.82
-POINT_GRASP_LEFT_OFFSET_PX = -9    # left workspace: nudge left from visual center
+POINT_GRASP_LEFT_OFFSET_PX = 0
 POINT_GRASP_CENTER_X_OFFSET_PX = 0
-POINT_GRASP_RIGHT_OFFSET_PX = 9    # right workspace: nudge right from visual center
+POINT_GRASP_RIGHT_OFFSET_PX = 0
 POINT_GRASP_LEFT_X_NORM = 0.34
 POINT_GRASP_CENTER_X_NORM = 0.50
 POINT_GRASP_RIGHT_X_NORM = 0.66
+WRIST_ROLL_NEUTRAL_DEG = 55.0
+WRIST_ROLL_OBJECT_TO_SERVO_SIGN = 1.0
+WRIST_ROLL_VISUAL_CORRECTION_SIGN = 1.0
+WRIST_ROLL_ALIGNMENT_GAIN = 1.0
+WRIST_ROLL_CALIBRATION_BIAS_DEG = 0.0
+WRIST_ROLL_MAX_PLANNER_DELTA_DEG = 50.0
+WRIST_ROLL_EDGE_MAX_PLANNER_DELTA_DEG = 22.0
+WRIST_ROLL_EDGE_MAX_FINAL_DELTA_DEG = 60.0
+WRIST_ROLL_EDGE_X_LOW_MM = 190.0
+WRIST_ROLL_EDGE_X_HIGH_MM = 340.0
+FINAL_ALIGN_CONFIDENCE_THRESHOLD = 0.60
+FINAL_ALIGN_MAX_CORRECTIONS = 0
+FINAL_ALIGN_MAX_XY_CORRECTION_MM = 40.0
+FINAL_ALIGN_MAX_WRIST_DELTA_DEG = 25.0
+FINAL_ALIGN_MAX_BASE_DELTA_DEG = 10.0
+PRE_GRASP_ROTATE_Z_MM = 70.0
+PRE_CLOSE_ALIGN_Z_MM = 35.0
+PRE_CLOSE_MAX_Y_CORRECTION_MM = 60.0
+PRE_CLOSE_MAX_BASE_DELTA_DEG = 20.0
+PRE_CLOSE_MAX_BASE_Y_SHIFT_MM = 85.0
+PRE_CLOSE_WRIST_DELTA_GAIN = 1.0
+PRE_CLOSE_MAX_WRIST_STEP_DEG = 60.0
+PRE_CLOSE_SETTLE_SECONDS = 2.0
+PRE_GRASP_WRIST_CONFIDENCE_THRESHOLD = 0.70
+PRE_GRASP_MAX_WRIST_DELTA_DEG = 60.0
+SIDE_GRASP_WRIST_PITCH_DEG = 27.0
+SIDE_GRASP_WRIST_ROLL_DEG = 55.0
+SIDE_GRASP_PREAPPROACH_X_BACKOFF_MM = 65.0
+SIDE_GRASP_DEFAULT_Z_MM = 60.0
+SIDE_GRASP_MIN_Z_MM = 45.0
+SIDE_GRASP_MAX_Z_MM = 90.0
+SIDE_GRASP_LIFT_Z_MM = 130.0
+SIDE_GRASP_TRANSIT_Z_MM = 95.0
 vision_homography = None
 vision_model = None
 vision_correction = None
@@ -577,61 +711,71 @@ You see through a camera mounted above the workspace.
 ═══ WRIST ROLL (GRIPPER ROTATION) ═══
 wrist_roll_deg controls gripper jaw rotation (0-180°).
 At 55° the gripper is STRAIGHT — aligned with the line from robot base to camera center.
+wrist_pitch_deg controls tool pitch. For side grasps, use the bridge side-grasp tools instead of guessing pitch manually.
 
 CRITICAL: The gripper is SMALL (~4cm). ALWAYS grab objects across their NARROWEST side!
 - Remote control → rotate so jaws close on the SHORT width, NOT along the length
 - Pen/marker → jaws perpendicular to the pen
 - Cubes → if the cube is rotated/tilted, align wrist roll to match its edges!
   A cube sitting at an angle still needs wrist roll adjustment to grab it cleanly.
+- Bottles/test tubes/cups/cylinders → do NOT top-grab. Use side_grasp_object so the gripper approaches the middle from the side with the gripper roughly parallel to the table.
 
 When to rotate: if the object (ANY object, including cubes) is not straight relative to the gripper.
-Use orientation_deg from detect_objects: wrist_roll_deg = 55 + orientation_deg
-If orientation_deg is 0 → object is straight → use 55.
-When unsure, still choose and pass a wrist_roll_deg. Do not omit it on approach/descent.
+Do NOT rotate wrist roll during the first approach. Keep wrist roll neutral until the gripper is low above the object.
+detect_objects returns wrist_roll_suggestion_deg only as debug/diagnostic information. Do not use it for the initial move.
+Final wrist roll is chosen only by align_before_descent, where the gripper and object are visible together.
 
 ═══ ORCHESTRATION PHILOSOPHY ═══
 You are the planner. Do NOT use a fixed one-shot routine.
 Observe → move → observe again → adjust → grab.
 The camera and robot have small errors, so your job is to close the loop visually before closing the gripper.
 
-STEP 1 — DETECT: detect_objects("object name") → get X, Y, orientation_deg
-  → Use one detection first. The tool computes a local contour center and a small grasp offset.
-  → detect_objects returns the final grasp target. Use those X/Y values directly; do not add your own forward offset.
+STEP 1 — DETECT: detect_objects("object name") → get X, Y
+  → Use one detection first. The tool returns the visual center of the object.
+  → Use the returned X/Y directly; do not add offsets.
+  → Ignore wrist_roll_suggestion_deg for motion. It is only debug.
+  → If detect_objects returns bbox_grasp_candidates, they are precomputed from the detector box: left_inset, center, right_inset.
+  → Prefer those candidates when the center looks awkward. Do not invent arbitrary extra points; choose one of the bbox candidates.
+  → If a grasp fails and bbox_grasp_candidates exist, retry a different candidate from the same box before inventing offsets:
+    first center, then left_inset or right_inset depending on which side looks better.
 STEP 2 — PREPARE: open_gripper → move_to_safe_height → wait_seconds(1.5)
-STEP 3 — ABOVE TARGET: move_arm(target_x, target_y, 200, wrist_roll_deg=chosen_value) → wait_seconds(2)
-  → From here, check orientation_deg from STEP 1:
-    If orientation_deg is small (roughly -10 to +10) → object is straight, use wrist_roll_deg=55
-    If orientation_deg is larger → use wrist_roll_deg = 55 + orientation_deg
-  → Pass wrist_roll_deg at this safe height so the wrist rotates before descending.
-STEP 4 — DESCEND: move_arm(target_x, target_y, 0, wrist_roll_deg=chosen_value) → wait_seconds(3)
-STEP 5 — VISUAL ALIGNMENT:
+STEP 3 — ABOVE TARGET: move_arm(target_x, target_y, 200) → wait_seconds(1.5)
+STEP 4 — PRE-GRASP WRIST CHECK:
+  1. move_arm(target_x, target_y, 70, wrist_roll_deg=55) → wait_seconds(2)
+  2. call align_before_descent(object, target_x, target_y, 55)
+  3. Use the returned target_y and wrist_roll_deg for final descent.
+  → align_before_descent lowers to about Z=35 first, then corrects wrist roll and Y left/right.
+  → Base/Y trim uses degrees: positive/increase = gripper moves LEFT, negative/decrease = gripper moves RIGHT.
+  → wrist_roll positive servo degrees rotate clockwise in the camera image; negative rotates counter-clockwise.
+STEP 5 — DESCEND: move_arm(corrected_target_x, corrected_target_y, 0, wrist_roll_deg=corrected_wrist_roll_deg) → wait_seconds(2.5)
+STEP 6 — VISUAL ALIGNMENT:
   1. For now, do not use check_target_alignment unless explicitly asked.
-  2. If a final visual check is needed, use check_gripper_proximity("object name").
-  → If not aligned, adjust with meaningful move_arm changes:
-    • forward/back = change X by 10-18mm, up to 25mm if clearly off
-    • left/right = change Y by 10-18mm, up to 25mm if clearly off
-    • rotate = change wrist_roll_deg by 8-20°
-    • tiny lateral trim alternative: trim_base_rotation(delta_deg)
-      This applies a small DELTA to the CURRENT base servo angle — there is no fixed neutral.
-      Look at where the gripper is right now in the camera and decide:
-        negative delta_deg → gripper moves LEFT
-        positive delta_deg → gripper moves RIGHT
-      Use only small trims, usually +/-2° to +/-5°, max +/-8°, then wait and recheck.
-  → After each adjustment, wait_seconds(1), then check_gripper_proximity again.
-  → Do this at most 4 times.
-STEP 6 — GRAB: close_gripper → wait_seconds(1.5)
-STEP 7 — LIFT: move_arm(target_x, target_y, 80) → wait_seconds(2) → check_success("holding object")
+  2. Before closing, call align_gripper_for_close(object, target_x, target_y, target_z, wrist_roll_deg).
+  → If it returns ready_to_close=true, then close_gripper.
+  → If it returns requires_redetect=true, detect_objects again and retry from STEP 3.
+  → DON'T OVERTHINK IT: if the object is visibly between the jaws, close_gripper. Do not chase tiny cosmetic errors.
+  → If confidence is medium but the object looks inside the gripper, accept it and grab. The robot is allowed to be practical.
+  → Do not perform X/Y/wrist corrections here. Corrections belong in align_before_descent before the final descent.
+  → Final alignment is only a sanity check: close if likely good, otherwise lift and re-detect.
+STEP 7 — GRAB: close_gripper → wait_seconds(1.5)
+STEP 8 — LIFT: move_arm(target_x, target_y, 80) → wait_seconds(2) → check_success("holding object")
   → If FAILED (max 2 retries):
     1. open_gripper → wait_seconds(1)
     2. detect_objects AGAIN (object may have moved!)
-    3. Retry from STEP 3 with NEW X,Y coords but Z 10mm LOWER (-10, then -20)
-    4. KEEP the SAME wrist_roll_deg! Do NOT change it on retry!
+    3. If bbox_grasp_candidates exist, try another candidate from the box. Otherwise retry with NEW X,Y coords but Z 10mm LOWER (-10, then -20)
+    4. Keep wrist_roll neutral until align_before_descent runs again.
     5. After 2 failed retries → go_home, tell user
-STEP 8 — TRANSPORT: move_to_safe_height → wait_seconds(2) → move_arm(dest_x, dest_y, 200) → wait_seconds(2)
-STEP 9 — PLACE: move_arm(dest_x, dest_y, 30) → wait_seconds(2)
+STEP 9 — TRANSPORT: move_to_safe_height → wait_seconds(2) → move_arm(dest_x, dest_y, 200) → wait_seconds(2)
+STEP 10 — PLACE: move_arm(dest_x, dest_y, 30) → wait_seconds(2)
   → Before open_gripper, use check_target_alignment(dest_x, dest_y, 30) if ID21 is visible.
   → Adjust up to 4 times with 10-18mm X/Y moves, then open_gripper.
-STEP 10 — DONE: move_to_safe_height → go_home
+STEP 11 — DONE: move_to_safe_height → go_home
+
+SIDE GRASP:
+- For a bottle, test tube, cup, cylinder, or tall container: call side_grasp_object("object").
+- It detects the object, opens the gripper, approaches the object at side-grasp height with wrist pitch set for a side grasp, closes, and lifts vertically.
+- side_grasp_object already returns holding_object=true and lifted=true when it succeeds. Do not stop after only asking whether it holds the object if the user requested more steps.
+- After a successful side grasp, keep the returned wrist_pitch_deg and wrist_roll_deg during transport moves. Do not let IK freely reset the wrist while holding a bottle/test tube.
 
 ═══ CRITICAL RULES ═══
 0. You must orchestrate using the tools. Think visually and adapt after each observation.
@@ -639,10 +783,12 @@ STEP 10 — DONE: move_to_safe_height → go_home
 2. ALWAYS open_gripper BEFORE descending.
 3. ALWAYS move to Z=200 before moving to new X,Y.
 4. ALWAYS detect_objects FIRST. Never guess positions.
-5. Do not call check_target_alignment for now; use check_gripper_proximity only when you need a final visual sanity check.
-6. On retry, ALWAYS detect_objects again for new X,Y but keep same wrist_roll_deg!
+5. Do not close_gripper until align_gripper_for_close returns ready_to_close=true.
+6. On retry, ALWAYS detect_objects again for new X/Y, but do not rotate wrist until align_before_descent.
 7. Maximum 2 retries then stop.
-8. ALWAYS pass wrist_roll_deg at safe/approach height first, wait, then descend with the SAME wrist_roll_deg. Do not begin wrist rotation for the first time during descent.
+8. The preferred wrist rotation moment is pre-grasp height around Z=70, not during the final descent.
+9. check_success is only a checkpoint. If completed=true and the user's request has more steps, continue the task.
+10. If an object is not detected after retries, STOP. Do not keep moving around an empty table spot.
 
 ═══ PERSONALITY ═══
 - Speak Romanian, be concise
@@ -652,14 +798,15 @@ STEP 10 — DONE: move_to_safe_height → go_home
 AGENT_TOOL_DECLARATIONS = [
     {
         "name": "move_arm",
-        "description": "Move the robot arm to an XYZ position in millimeters using inverse kinematics. Always pass wrist_roll_deg during approach and descent when picking, using 55 + object orientation.",
+        "description": "Move the robot arm to an XYZ position in millimeters using inverse kinematics. During top picking, keep wrist_roll_deg neutral at 55 until align_before_descent. For side grasps, prefer side_grasp_object.",
         "parameters": {
             "type": "object",
             "properties": {
                 "x": {"type": "number", "description": "Forward distance from base in mm. Reachability is checked by IK result/error."},
                 "y": {"type": "number", "description": "Left/right offset in mm, negative=right, positive=left. Reachability is checked by IK result/error."},
                 "z": {"type": "number", "description": "Height in mm (-10 to 250. -10 to 0=below table level for flat objects, 0=table, 200=safe transit)"},
-                "wrist_roll_deg": {"type": "number", "description": "Wrist roll servo angle (0-180). 55=gripper straight/neutral. To align with object: 55 + object_orientation_deg. Object at 30° → 85, at -20° → 35. Pass this at safe approach height and again during descent."}
+                "wrist_roll_deg": {"type": "number", "description": "Wrist roll servo angle (0-180). For top picks, use 55 during approach. Do not use detect_objects wrist_roll_suggestion_deg until align_before_descent decides visually."},
+                "wrist_pitch_deg": {"type": "number", "description": "Optional wrist pitch servo angle (0-170). Use only for deliberate tool orientation; for bottles/cylinders prefer side_grasp_object."}
             },
             "required": ["x", "y", "z"]
         }
@@ -675,6 +822,11 @@ AGENT_TOOL_DECLARATIONS = [
         "parameters": {"type": "object", "properties": {}}
     },
     {
+        "name": "wave_hello",
+        "description": "Run the friendly IRIS audience greeting/wave routine.",
+        "parameters": {"type": "object", "properties": {}}
+    },
+    {
         "name": "move_to_safe_height",
         "description": "Move arm to safe transit height (Z=200mm).",
         "parameters": {"type": "object", "properties": {}}
@@ -686,7 +838,7 @@ AGENT_TOOL_DECLARATIONS = [
     },
     {
         "name": "detect_objects",
-        "description": "Use camera + Gemini ER vision plus local contour refinement to find objects on the table. Returns a final XYZ grasp target.",
+        "description": "Use camera + Gemini ER vision plus local contour refinement to find objects on the table. Returns a final XYZ grasp target, debug wrist_roll_suggestion_deg, and bbox_grasp_candidates when a detector box is available.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -719,6 +871,48 @@ AGENT_TOOL_DECLARATIONS = [
         }
     },
     {
+        "name": "check_wrist_roll_alignment",
+        "description": "At pre-grasp height around Z=70, look at the gripper above/near the object and judge only wrist-roll orientation. Returns a small wrist_roll_delta_deg to align the jaws before final descent.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "object_description": {"type": "string", "description": "The object being grabbed, e.g. '2x2 cube'."},
+                "current_wrist_roll_deg": {"type": "number", "description": "Current wrist roll servo angle."}
+            },
+            "required": ["object_description", "current_wrist_roll_deg"]
+        }
+    },
+    {
+        "name": "align_before_descent",
+        "description": "Lower near the object before the final drop, then visually correct wrist roll and Y left/right. Positive dy_mm moves left, negative moves right. Positive base_servo_delta_deg increases base degrees and moves left; negative moves right. Use returned target_y and wrist_roll_deg for final descent.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "object_description": {"type": "string", "description": "The object being grabbed, e.g. '2x2 cube', 'cup', or 'test tube'."},
+                "target_x": {"type": "number", "description": "Current grasp target X in robot mm."},
+                "target_y": {"type": "number", "description": "Current grasp target Y in robot mm."},
+                "current_wrist_roll_deg": {"type": "number", "description": "Current wrist roll servo angle."},
+                "target_z": {"type": "number", "description": "Low pre-close alignment height, default 35mm."}
+            },
+            "required": ["object_description", "target_x", "target_y", "current_wrist_roll_deg"]
+        }
+    },
+    {
+        "name": "align_gripper_for_close",
+        "description": "Final closed-loop guard before close_gripper. It checks whether the object is inside the jaws, applies at most 2 corrections, and returns ready_to_close=true only when it is safe to close. If unsure, it opens/lifts and asks for re-detection.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "object_description": {"type": "string", "description": "The object being grabbed, e.g. 'red cube' or '3x3 cube'."},
+                "target_x": {"type": "number", "description": "Current grasp target X in robot mm."},
+                "target_y": {"type": "number", "description": "Current grasp target Y in robot mm."},
+                "target_z": {"type": "number", "description": "Current grasp target Z in robot mm, usually 0."},
+                "wrist_roll_deg": {"type": "number", "description": "Current wrist roll angle. For top picks this is usually the value returned by align_before_descent, not detect_objects."}
+            },
+            "required": ["object_description", "target_x", "target_y"]
+        }
+    },
+    {
         "name": "get_gripper_pose",
         "description": "Estimate the real visual gripper-tip position using ArUco ID21 on the gripper. Returns tip X/Y, marker visibility, pixel position, and FK-vs-vision error.",
         "parameters": {"type": "object", "properties": {}}
@@ -738,6 +932,19 @@ AGENT_TOOL_DECLARATIONS = [
         }
     },
     {
+        "name": "side_grasp_object",
+        "description": "Detect and side-grasp a tall object such as a bottle, test tube, cup, or cylinder. The gripper approaches the middle of the object from the side with wrist pitch set for a table-parallel side grasp, then closes and lifts.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "object_description": {"type": "string", "description": "Object to side-grasp, e.g. 'small bottle', 'test tube', 'cup'."},
+                "grasp_z": {"type": "number", "description": "Optional side grasp height in mm. Values are clamped to a safe side range; omit this unless you have a strong reason."},
+                "lift_z": {"type": "number", "description": "Optional lift height after closing, default 130mm."}
+            },
+            "required": ["object_description"]
+        }
+    },
+    {
         "name": "set_servo_direct",
         "description": "Directly set one servo to an absolute angle. Prefer trim_base_rotation for lateral fine alignment — that one uses a small delta from the current angle, no need to know the absolute value.",
         "parameters": {
@@ -751,11 +958,11 @@ AGENT_TOOL_DECLARATIONS = [
     },
     {
         "name": "trim_base_rotation",
-        "description": "Apply a small DELTA to the current base rotation servo (channel 6) for final lateral alignment. There is no fixed neutral — the delta is added to wherever the base servo is right now. Look at the gripper in the camera: if it sits to the right of the target, send a negative delta (moves left). If it sits to the left of the target, send a positive delta (moves right). Use small trims only, typically +/-2 to +/-5 degrees, max +/-8.",
+        "description": "Apply a small DELTA to the current base rotation servo (channel 6) for final lateral alignment. There is no fixed neutral — the delta is added to wherever the base servo is right now. Positive/increase moves the gripper LEFT; negative/decrease moves the gripper RIGHT. Use small trims only.",
         "parameters": {
             "type": "object",
             "properties": {
-                "delta_deg": {"type": "number", "description": "Degrees to add to the current base servo angle. Negative = gripper left, positive = gripper right. Keep small (+/-2 to +/-5, max +/-8)."}
+                "delta_deg": {"type": "number", "description": "Degrees to add to the current base servo angle. Positive = gripper left, negative = gripper right. Keep small (+/-3 to +/-7, max +/-10)."}
             },
             "required": ["delta_deg"]
         }
@@ -778,11 +985,25 @@ AGENT_TOOL_DECLARATIONS = [
     },
 ]
 
-def move_arm_direct(x, y, z, wrist_roll_deg=None):
+held_object_state = {
+    "holding": False,
+    "grasp_mode": None,
+    "object_description": None,
+    "wrist_pitch_deg": None,
+    "wrist_roll_deg": None,
+}
+
+
+def move_arm_direct(x, y, z, wrist_roll_deg=None, wrist_pitch_deg=None):
+    if held_object_state.get("holding") and held_object_state.get("grasp_mode") == "side":
+        if wrist_roll_deg is None:
+            wrist_roll_deg = held_object_state.get("wrist_roll_deg")
+        if wrist_pitch_deg is None:
+            wrist_pitch_deg = held_object_state.get("wrist_pitch_deg")
     # Agent/Live commands use table-relative Z, same as /ik and Vision Pick.
     z_adjusted = float(z) - PLATFORM_HEIGHT_MM
     target_m = [float(x) / 1000, float(y) / 1000, z_adjusted / 1000]
-    servo_angles, error, actual_mm = solve_ik(target_m)
+    servo_angles, error, actual_mm = solve_ik(target_m, wrist_pitch_deg=wrist_pitch_deg)
     if error > 35:
         print(f"  Agent → Arm target unreachable-ish ({x},{y},{z})mm err={error:.1f}mm; not moving")
         return {
@@ -791,6 +1012,9 @@ def move_arm_direct(x, y, z, wrist_roll_deg=None):
             "error_mm": round(error, 1),
             "actual": {"x": round(actual_mm[0], 1), "y": round(actual_mm[1], 1), "z": round(actual_mm[2], 1)},
         }
+    wp_cfg = SERVO_CONFIG['wrist_pitch']
+    wp_angle = servo_angles[wp_cfg['ch']]
+
     wr_cfg = SERVO_CONFIG['wrist_roll']
     if wrist_roll_deg is not None:
         wr_angle = int(round(np.clip(wrist_roll_deg, wr_cfg['min'], wr_cfg['max'])))
@@ -799,14 +1023,18 @@ def move_arm_direct(x, y, z, wrist_roll_deg=None):
         wr_angle = last_wrist_roll[0]
     servo_angles[wr_cfg['ch']] = wr_angle
     servo_angles[5] = 180 - servo_angles[4]
+    sent_servo_angles = compensated_servo_targets(servo_angles)
     for ch, angle in servo_angles.items():
         set_target(ch, angle)
-    print(f"  Agent → Arm ({actual_mm[0]:.0f},{actual_mm[1]:.0f},{actual_mm[2]:.0f})mm err={error:.1f}mm wr={wr_angle}°")
+    print(f"  Agent → Arm ({actual_mm[0]:.0f},{actual_mm[1]:.0f},{actual_mm[2]:.0f})mm err={error:.1f}mm wp={wp_angle}° wr={wr_angle}° servos={sent_servo_angles}")
     return {
         "success": True,
         "actual": {"x": round(actual_mm[0], 1), "y": round(actual_mm[1], 1), "z": round(actual_mm[2], 1)},
         "error_mm": round(error, 1),
+        "wrist_pitch": wp_angle,
         "wrist_roll": wr_angle,
+        "servos": sent_servo_angles,
+        "ik_servos_raw": servo_angles,
     }
 
 
@@ -816,7 +1044,406 @@ def set_gripper(opened):
     with move_lock:
         current_angles[0] = angle
         target_angles[0] = angle
+    if opened:
+        held_object_state.update({
+            "holding": False,
+            "grasp_mode": None,
+            "object_description": None,
+            "wrist_pitch_deg": None,
+            "wrist_roll_deg": None,
+        })
     return {"success": True, "state": "open" if opened else "closed"}
+
+
+def _safe_float(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def y_target_from_base_delta(x_mm, y_mm, base_delta_deg):
+    """Approximate a small base-servo trim as a lateral Y target shift."""
+    x_mm = _safe_float(x_mm)
+    y_mm = _safe_float(y_mm)
+    base_delta_deg = _safe_float(base_delta_deg)
+    dy = x_mm * np.tan(np.radians(base_delta_deg))
+    dy = float(np.clip(dy, -PRE_CLOSE_MAX_BASE_Y_SHIFT_MM, PRE_CLOSE_MAX_BASE_Y_SHIFT_MM))
+    return y_mm + dy, dy
+
+
+def align_gripper_for_close_direct(object_description, target_x, target_y, target_z=0.0,
+                                   wrist_roll_deg=None, max_corrections=FINAL_ALIGN_MAX_CORRECTIONS):
+    """Closed-loop final alignment guard. It never closes the gripper itself."""
+    current_x = _safe_float(target_x)
+    current_y = _safe_float(target_y)
+    current_z = _safe_float(target_z)
+    current_wr = _safe_float(wrist_roll_deg, last_wrist_roll[0]) if wrist_roll_deg is not None else last_wrist_roll[0]
+    max_corrections = int(max(0, min(3, max_corrections)))
+    history = []
+
+    for attempt in range(max_corrections + 1):
+        check = agent_execute_function("check_gripper_proximity", {
+            "object_description": object_description,
+        })
+        history.append(check)
+        confidence = _safe_float(check.get("confidence", 0.0), 0.0)
+        if check.get("success") and check.get("aligned") and confidence >= FINAL_ALIGN_CONFIDENCE_THRESHOLD:
+            return {
+                "success": True,
+                "ready_to_close": True,
+                "attempts": attempt,
+                "confidence": round(confidence, 2),
+                "target": {"x": round(current_x, 1), "y": round(current_y, 1), "z": round(current_z, 1)},
+                "wrist_roll_deg": round(current_wr, 1),
+                "history": history,
+            }
+
+        if attempt >= max_corrections:
+            break
+
+        # Final close alignment is only a sanity check. Do not move here:
+        # late corrections tend to overthink good grasps and knock objects away.
+        break
+
+    set_gripper(True)
+    move_arm_direct(current_x, current_y, 200.0, current_wr)
+    return {
+        "success": True,
+        "ready_to_close": False,
+        "requires_redetect": True,
+        "reason": "Final visual alignment is not confident enough; gripper opened and lifted to safe height.",
+        "target": {"x": round(current_x, 1), "y": round(current_y, 1), "z": round(current_z, 1)},
+        "wrist_roll_deg": round(current_wr, 1),
+        "history": history,
+    }
+
+
+def check_wrist_roll_alignment_direct(object_description, current_wrist_roll_deg):
+    """Ask the vision model for a small wrist-roll correction at pre-grasp height."""
+    import urllib.request as urlreq
+
+    frame = get_camera_frame()
+    if frame is None:
+        return {"success": False, "error": "Camera not running"}
+    _, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
+    img_b64 = base64.b64encode(jpeg.tobytes()).decode('utf-8')
+    current_wr = _safe_float(current_wrist_roll_deg, last_wrist_roll[0])
+
+    prompt = f"""Look at this robot camera image. The gripper is near/above the object before the final descent.
+Object: "{object_description}"
+Current wrist roll servo angle: {current_wr:.1f} degrees.
+
+Judge ONLY wrist roll orientation: are the gripper jaws aligned with the object's grasp direction?
+For a cube, compare the gripper jaw line to the cube top-face edges. If the cube is rotated about 45 degrees, the wrist correction should be modest, around that kind of angle, not a huge swing.
+Do not suggest X/Y/Z movement here. Only wrist roll.
+
+Use image-space signs only:
+- positive wrist_roll_delta_deg = the gripper should rotate clockwise in the camera image.
+- negative wrist_roll_delta_deg = the gripper should rotate counter-clockwise in the camera image.
+If unsure, use a small delta or 0 and low confidence.
+Never suggest more than +/-20 degrees. Most cup/cube corrections should be around 5-15 degrees, but use more if clearly needed.
+
+Respond ONLY in JSON:
+{{
+  "aligned": true/false,
+  "confidence": 0.0-1.0,
+  "wrist_roll_delta_deg": 0,
+  "reasoning": "brief Romanian explanation"
+}}"""
+
+    request_body = {
+        "contents": [{"parts": [
+            {"inlineData": {"mimeType": "image/jpeg", "data": img_b64}},
+            {"text": prompt}
+        ]}],
+        "generationConfig": {"temperature": 0.15, "thinkingConfig": {"thinkingBudget": 512}}
+    }
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+    req = urlreq.Request(url, data=json.dumps(request_body).encode('utf-8'),
+                         headers={"Content-Type": "application/json"}, method="POST")
+    with urlreq.urlopen(req, timeout=15) as resp:
+        result = json.loads(resp.read().decode('utf-8'))
+
+    text = ""
+    for candidate in result.get("candidates", []):
+        for part in candidate.get("content", {}).get("parts", []):
+            if "text" in part:
+                text += part["text"]
+    clean = text.strip()
+    if clean.startswith("```"):
+        clean = clean.split("\n", 1)[1] if "\n" in clean else clean[3:]
+        clean = clean.rsplit("```", 1)[0]
+    try:
+        check = json.loads(clean.strip())
+    except Exception:
+        return {"success": True, "aligned": False, "confidence": 0.0, "wrist_roll_delta_deg": 0.0, "raw_response": text[:240]}
+
+    raw_delta = float(np.clip(
+        _safe_float(check.get("wrist_roll_delta_deg", 0.0), 0.0),
+        -PRE_GRASP_MAX_WRIST_DELTA_DEG,
+        PRE_GRASP_MAX_WRIST_DELTA_DEG,
+    ))
+    delta = float(np.clip(
+        raw_delta * WRIST_ROLL_VISUAL_CORRECTION_SIGN,
+        -PRE_GRASP_MAX_WRIST_DELTA_DEG,
+        PRE_GRASP_MAX_WRIST_DELTA_DEG,
+    ))
+    confidence = _safe_float(check.get("confidence", 0.0), 0.0)
+    aligned = bool(check.get("aligned")) and confidence >= PRE_GRASP_WRIST_CONFIDENCE_THRESHOLD
+    return {
+        "success": True,
+        "aligned": aligned,
+        "confidence": round(confidence, 2),
+        "wrist_roll_delta_deg": round(delta, 1),
+        "raw_image_wrist_roll_delta_deg": round(raw_delta, 1),
+        "visual_correction_sign": WRIST_ROLL_VISUAL_CORRECTION_SIGN,
+        "suggested_wrist_roll_deg": round(float(np.clip(
+            current_wr + delta,
+            SERVO_CONFIG["wrist_roll"]["min"],
+            SERVO_CONFIG["wrist_roll"]["max"],
+        )), 1),
+        "reasoning": check.get("reasoning", ""),
+    }
+
+
+def align_before_descent_direct(object_description, target_x, target_y, current_wrist_roll_deg,
+                                target_z=PRE_CLOSE_ALIGN_Z_MM, max_corrections=2):
+    """Low pre-close visual alignment. Applies wrist-roll and small base/Y corrections."""
+    import urllib.request as urlreq
+
+    current_x = _safe_float(target_x)
+    current_y = _safe_float(target_y)
+    current_z = _safe_float(target_z, PRE_CLOSE_ALIGN_Z_MM)
+    # For top grasps, ignore detector/planner wrist suggestions. Start from a
+    # known neutral pose and let the low visual check choose the roll.
+    current_wr = WRIST_ROLL_NEUTRAL_DEG
+    current_wr = clamp_wrist_roll_for_workspace(current_wr, current_x)
+    max_corrections = int(max(0, min(3, max_corrections)))
+    history = []
+
+    move_arm_direct(current_x, current_y, current_z, current_wr)
+    time.sleep(PRE_CLOSE_SETTLE_SECONDS)
+
+    for attempt in range(max_corrections + 1):
+        frame = get_camera_frame()
+        if frame is None:
+            return {"success": False, "error": "Camera not running"}
+        _, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
+        img_b64 = base64.b64encode(jpeg.tobytes()).decode('utf-8')
+
+        prompt = f"""Look at this robot camera image. The gripper is LOW and close to the object, just before the final descent and close.
+Object: "{object_description}"
+Current target: x={current_x:.1f}mm, y={current_y:.1f}mm, z={current_z:.1f}mm
+Current wrist roll servo angle: {current_wr:.1f} degrees.
+
+Goal: judge wrist roll and Y left-right alignment at this low pre-close height.
+Do not suggest X movement. Use dy_mm for left/right. You may use base_servo_delta_deg only as an optional yaw trim.
+wrist_roll_delta_deg is an image-space correction, usually -15..35, max +/-60.
+dy_mm is a robot Y correction, usually -15..25, max +/-60.
+base_servo_delta_deg is a small base rotation trim, usually -10..10, max +/-20.
+This is the ONLY wrist-roll decision point for top picks, so use enough correction when clearly needed.
+
+For wrist_roll_delta_deg signs:
+- positive = increase servo degrees; this rotates the gripper clockwise in the camera image
+- negative = decrease servo degrees; this rotates the gripper counter-clockwise in the camera image
+For base_servo_delta_deg signs:
+- positive = increase base servo degrees; gripper moves LEFT in the camera/workspace
+- negative = decrease base servo degrees; gripper moves RIGHT in the camera/workspace
+For dy_mm signs:
+- positive = move gripper LEFT
+- negative = move gripper RIGHT
+
+If it is already good enough, aligned=true and deltas 0.
+Respond ONLY in JSON:
+{{
+  "aligned": true/false,
+  "confidence": 0.0-1.0,
+  "dy_mm": 0,
+  "wrist_roll_delta_deg": 0,
+  "base_servo_delta_deg": 0,
+  "reasoning": "brief Romanian explanation"
+}}"""
+
+        request_body = {
+            "contents": [{"parts": [
+                {"inlineData": {"mimeType": "image/jpeg", "data": img_b64}},
+                {"text": prompt}
+            ]}],
+            "generationConfig": {"temperature": 0.2, "thinkingConfig": {"thinkingBudget": 768}}
+        }
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+        req = urlreq.Request(url, data=json.dumps(request_body).encode('utf-8'),
+                             headers={"Content-Type": "application/json"}, method="POST")
+        with urlreq.urlopen(req, timeout=15) as resp:
+            result = json.loads(resp.read().decode('utf-8'))
+
+        text = ""
+        for candidate in result.get("candidates", []):
+            for part in candidate.get("content", {}).get("parts", []):
+                if "text" in part:
+                    text += part["text"]
+        clean = text.strip()
+        if clean.startswith("```"):
+            clean = clean.split("\n", 1)[1] if "\n" in clean else clean[3:]
+            clean = clean.rsplit("```", 1)[0]
+        try:
+            check = json.loads(clean.strip())
+        except Exception:
+            check = {"aligned": False, "confidence": 0.0, "dy_mm": 0, "wrist_roll_delta_deg": 0, "base_servo_delta_deg": 0, "reasoning": text[:200]}
+
+        confidence = _safe_float(check.get("confidence", 0.0), 0.0)
+        raw_wr_delta = float(np.clip(
+            _safe_float(check.get("wrist_roll_delta_deg", 0.0), 0.0),
+            -PRE_GRASP_MAX_WRIST_DELTA_DEG,
+            PRE_GRASP_MAX_WRIST_DELTA_DEG,
+        ))
+        wr_delta = float(np.clip(
+            raw_wr_delta * WRIST_ROLL_VISUAL_CORRECTION_SIGN * PRE_CLOSE_WRIST_DELTA_GAIN,
+            -PRE_CLOSE_MAX_WRIST_STEP_DEG,
+            PRE_CLOSE_MAX_WRIST_STEP_DEG,
+        ))
+        base_delta = float(np.clip(
+            _safe_float(check.get("base_servo_delta_deg", 0.0), 0.0),
+            -PRE_CLOSE_MAX_BASE_DELTA_DEG,
+            PRE_CLOSE_MAX_BASE_DELTA_DEG,
+        ))
+        dy = float(np.clip(
+            _safe_float(check.get("dy_mm", 0.0), 0.0),
+            -PRE_CLOSE_MAX_Y_CORRECTION_MM,
+            PRE_CLOSE_MAX_Y_CORRECTION_MM,
+        ))
+        entry = {
+            "attempt": attempt,
+            "aligned": bool(check.get("aligned")),
+            "confidence": round(confidence, 2),
+            "dx_mm": 0.0,
+            "dy_mm": round(dy, 1),
+            "base_servo_delta_deg": round(base_delta, 1),
+            "wrist_roll_delta_deg": round(wr_delta, 1),
+            "raw_image_wrist_roll_delta_deg": round(raw_wr_delta, 1),
+            "wrist_delta_gain": PRE_CLOSE_WRIST_DELTA_GAIN,
+            "reasoning": check.get("reasoning", ""),
+        }
+        history.append(entry)
+
+        if bool(check.get("aligned")) and confidence >= PRE_GRASP_WRIST_CONFIDENCE_THRESHOLD:
+            return {
+                "success": True,
+                "aligned": True,
+                "target_x": round(current_x, 1),
+                "target_y": round(current_y, 1),
+                "target_z": round(current_z, 1),
+                "wrist_roll_deg": round(current_wr, 1),
+                "history": history,
+            }
+
+        if attempt >= max_corrections:
+            break
+
+        if abs(wr_delta) < 2.0 and abs(base_delta) < 1.0 and abs(dy) < 2.0:
+            break
+
+        if abs(dy) >= 2.0:
+            current_y += dy
+        elif abs(base_delta) >= 1.0:
+            current_y, dy_from_base = y_target_from_base_delta(current_x, current_y, base_delta)
+            entry["dy_from_base_delta_mm"] = round(dy_from_base, 1)
+
+        current_wr = float(np.clip(
+            current_wr + wr_delta,
+            SERVO_CONFIG["wrist_roll"]["min"],
+            SERVO_CONFIG["wrist_roll"]["max"],
+        ))
+        current_wr = clamp_wrist_roll_for_workspace(current_wr, current_x)
+        move_arm_direct(current_x, current_y, current_z, current_wr)
+        time.sleep(PRE_CLOSE_SETTLE_SECONDS)
+
+    return {
+        "success": True,
+        "aligned": False,
+        "target_x": round(current_x, 1),
+        "target_y": round(current_y, 1),
+        "target_z": round(current_z, 1),
+        "wrist_roll_deg": round(current_wr, 1),
+        "history": history,
+        "note": "Use these returned target/wrist values for descent, or re-detect if confidence is poor.",
+    }
+
+
+def _is_side_grasp_object(text):
+    t = str(text).lower()
+    return any(token in t for token in (
+        "bottle", "sticla", "sticlă", "test tube", "eprubeta", "eprubetă",
+        "tube", "cup", "pahar", "cylinder", "cilindru", "can", "doza", "doză"
+    ))
+
+
+def _side_grasp_z_from_detection(obj, requested_z=None):
+    if requested_z is not None:
+        return float(np.clip(_safe_float(requested_z, SIDE_GRASP_DEFAULT_Z_MM),
+                             SIDE_GRASP_MIN_Z_MM, SIDE_GRASP_MAX_Z_MM))
+    h = _safe_float(obj.get("height_mm", 0.0), 0.0)
+    if h <= 45.0 and _is_side_grasp_object(obj.get("label", "")):
+        h = SIDE_GRASP_DEFAULT_Z_MM * 2.0
+    if h <= 0.0:
+        return SIDE_GRASP_DEFAULT_Z_MM
+    return float(np.clip(h * 0.5, SIDE_GRASP_MIN_Z_MM, SIDE_GRASP_MAX_Z_MM))
+
+
+def side_grasp_object_direct(object_description, grasp_z=None, lift_z=None):
+    """Experimental side grasp primitive for bottles/test tubes/cylinders."""
+    det = detect_objects_once(object_description, temperature=0.0)
+    objects = det.get("objects", [])
+    if not objects:
+        return {"success": False, "error": "Object not detected", "detection": det}
+
+    obj = objects[0]
+    rx = _safe_float(obj.get("robot", {}).get("x"), 200.0)
+    ry = _safe_float(obj.get("robot", {}).get("y"), 0.0)
+    gz = _side_grasp_z_from_detection(obj, grasp_z)
+    lift_z = float(np.clip(_safe_float(lift_z, SIDE_GRASP_LIFT_Z_MM), gz + 35.0, 220.0))
+    pre_x = max(60.0, rx - SIDE_GRASP_PREAPPROACH_X_BACKOFF_MM)
+    wp = SIDE_GRASP_WRIST_PITCH_DEG
+    wr = SIDE_GRASP_WRIST_ROLL_DEG
+
+    print(f"  Side grasp '{object_description}': target=({rx:.1f},{ry:.1f},{gz:.1f}) pre_x={pre_x:.1f} wp={wp:.1f} wr={wr:.1f}")
+    set_gripper(True)
+    time.sleep(0.4)
+    move_arm_direct(pre_x, ry, SIDE_GRASP_TRANSIT_Z_MM, wr, wp)
+    time.sleep(1.5)
+    move_arm_direct(pre_x, ry, gz, wr, wp)
+    time.sleep(1.5)
+    move_arm_direct(rx, ry, gz, wr, wp)
+    time.sleep(1.5)
+    set_gripper(False)
+    held_object_state.update({
+        "holding": True,
+        "grasp_mode": "side",
+        "object_description": object_description,
+        "wrist_pitch_deg": wp,
+        "wrist_roll_deg": wr,
+    })
+    time.sleep(1.2)
+    # Lift vertically first so the user can see the object is actually held.
+    move_arm_direct(rx, ry, lift_z, wr, wp)
+    time.sleep(1.8)
+    move_arm_direct(pre_x, ry, lift_z, wr, wp)
+    time.sleep(1.2)
+
+    return {
+        "success": True,
+        "mode": "side_grasp",
+        "holding_object": True,
+        "lifted": True,
+        "object": obj,
+        "target": {"x": round(rx, 1), "y": round(ry, 1), "z": round(gz, 1)},
+        "lift": {"x": round(rx, 1), "y": round(ry, 1), "z": round(lift_z, 1)},
+        "preapproach": {"x": round(pre_x, 1), "y": round(ry, 1), "z": round(gz, 1)},
+        "wrist_pitch_deg": wp,
+        "wrist_roll_deg": wr,
+        "note": "Experimental side grasp. Tune SIDE_GRASP_WRIST_PITCH_DEG if the gripper is not parallel to the table.",
+    }
 
 
 def point_grasp_y_offset_px(py, img_h):
@@ -851,6 +1478,132 @@ def point_grasp_offset_px(px, py, img_w, img_h):
     return point_grasp_x_offset_px(px, img_w), point_grasp_y_offset_px(py, img_h)
 
 
+def bbox_grasp_candidates(bbox_px, height_mm, img_w, img_h, grasp_fraction=0.5):
+    """Return left/center/right candidate grasp points from a detector bbox."""
+    if not bbox_px or bbox_px.get("w", 0) <= 0 or bbox_px.get("h", 0) <= 0:
+        return []
+    x0 = float(bbox_px["x"])
+    y0 = float(bbox_px["y"])
+    w = float(bbox_px["w"])
+    h = float(bbox_px["h"])
+    y = y0 + h * float(grasp_fraction)
+    candidates = []
+    for name, frac in (("left_inset", 0.18), ("center", 0.50), ("right_inset", 0.82)):
+        x = x0 + w * frac
+        x = float(np.clip(x, 0, max(0, img_w - 1)))
+        y_clamped = float(np.clip(y, 0, max(0, img_h - 1)))
+        robot_xy = pixel_to_robot(x, y_clamped, height_mm)
+        if not robot_xy:
+            continue
+        rx, ry = robot_xy
+        candidates.append({
+            "name": name,
+            "bbox_fraction_x": frac,
+            "pixel": {"x": int(round(x)), "y": int(round(y_clamped))},
+            "robot": {"x": round(rx, 1), "y": round(ry, 1), "z": round(float(height_mm), 1)},
+        })
+    return candidates
+
+
+def normalize_angle_180(deg):
+    return ((float(deg) + 180.0) % 360.0) - 180.0
+
+
+def normalize_axis_angle_90(deg):
+    """Normalize an unoriented object axis angle to [-90, 90)."""
+    angle = normalize_angle_180(deg)
+    while angle < -90.0:
+        angle += 180.0
+    while angle >= 90.0:
+        angle -= 180.0
+    return angle
+
+
+def contour_axis_angle_deg(contour):
+    """Estimate the main visual axis angle of a contour in image pixels."""
+    try:
+        rect = cv2.minAreaRect(contour)
+        (rw, rh) = rect[1]
+        if rw < 8 or rh < 8:
+            return None
+        angle = float(rect[2])
+        if rw < rh:
+            angle += 90.0
+        return normalize_axis_angle_90(angle)
+    except Exception:
+        return None
+
+
+def image_axis_to_robot_table_angle(px, py, image_axis_deg, z_robot_mm=0.0):
+    """Convert an image-space object axis into a robot-table X/Y angle."""
+    if image_axis_deg is None:
+        return None
+    length_px = 45.0
+    theta = np.radians(float(image_axis_deg))
+    dx = np.cos(theta) * length_px
+    dy = np.sin(theta) * length_px
+    p1 = pixel_to_robot(float(px) - dx, float(py) - dy, z_robot_mm)
+    p2 = pixel_to_robot(float(px) + dx, float(py) + dy, z_robot_mm)
+    if not p1 or not p2:
+        return None
+    rx1, ry1 = p1
+    rx2, ry2 = p2
+    if abs(rx2 - rx1) < 1e-6 and abs(ry2 - ry1) < 1e-6:
+        return None
+    return normalize_axis_angle_90(np.degrees(np.arctan2(ry2 - ry1, rx2 - rx1)))
+
+
+def plan_top_grasp_wrist_roll(rx, ry, table_orientation_deg=None):
+    """Plan a modest top-grasp wrist roll from the object's table angle."""
+    wr_cfg = SERVO_CONFIG["wrist_roll"]
+    rx = float(rx)
+    ry = float(ry)
+    arm_bearing = normalize_angle_180(np.degrees(np.arctan2(float(ry), max(float(rx), 1e-6))))
+    if table_orientation_deg is None:
+        table_orientation_deg = 0.0
+        source = "neutral_no_orientation"
+    else:
+        table_orientation_deg = normalize_axis_angle_90(table_orientation_deg)
+        source = "table_orientation"
+    relative_axis = normalize_axis_angle_90(table_orientation_deg)
+    workspace_scale = 1.0
+    max_delta = WRIST_ROLL_MAX_PLANNER_DELTA_DEG
+    workspace_zone = "center"
+    if rx < WRIST_ROLL_EDGE_X_LOW_MM or rx > WRIST_ROLL_EDGE_X_HIGH_MM:
+        max_delta = WRIST_ROLL_EDGE_MAX_PLANNER_DELTA_DEG
+        workspace_zone = "edge_x"
+    planner_delta = float(np.clip(
+        WRIST_ROLL_OBJECT_TO_SERVO_SIGN * WRIST_ROLL_ALIGNMENT_GAIN * workspace_scale * relative_axis,
+        -max_delta,
+        max_delta,
+    ))
+    wrist_roll = WRIST_ROLL_NEUTRAL_DEG + WRIST_ROLL_CALIBRATION_BIAS_DEG + planner_delta
+    wrist_roll = float(np.clip(wrist_roll, wr_cfg["min"], wr_cfg["max"]))
+    return {
+        "grasp_mode": "top",
+        "wrist_roll_deg": round(wrist_roll, 1),
+        "neutral_deg": WRIST_ROLL_NEUTRAL_DEG,
+        "planner_delta_deg": round(planner_delta, 1),
+        "max_delta_deg": round(float(max_delta), 1),
+        "workspace_zone": workspace_zone,
+        "workspace_scale": round(workspace_scale, 2),
+        "arm_bearing_deg": round(arm_bearing, 1),
+        "table_orientation_deg": round(float(table_orientation_deg), 1),
+        "source": source,
+    }
+
+
+def clamp_wrist_roll_for_workspace(wrist_roll_deg, rx):
+    """Keep edge-workspace wrist roll away from extreme values caused by perspective."""
+    wrist_roll = float(wrist_roll_deg)
+    rx = float(rx)
+    if rx < WRIST_ROLL_EDGE_X_LOW_MM or rx > WRIST_ROLL_EDGE_X_HIGH_MM:
+        lo = WRIST_ROLL_NEUTRAL_DEG - WRIST_ROLL_EDGE_MAX_FINAL_DELTA_DEG
+        hi = WRIST_ROLL_NEUTRAL_DEG + WRIST_ROLL_EDGE_MAX_FINAL_DELTA_DEG
+        return float(np.clip(wrist_roll, lo, hi))
+    return wrist_roll
+
+
 def refine_object_pixel_with_color(frame, px, py, label="", query="", bbox_px=None):
     """Refine a rough VLM detection to the local object contour center."""
     text = f"{label} {query}".lower()
@@ -864,7 +1617,9 @@ def refine_object_pixel_with_color(frame, px, py, label="", query="", bbox_px=No
         x2 = min(w, int(bbox_px["x"] + bbox_px["w"] + pad))
         y2 = min(h, int(bbox_px["y"] + bbox_px["h"] + pad))
     else:
-        radius = 300
+        # Point-only detections should refine only near Gemini's point. A large
+        # radius can jump to a neighboring cube and make the robot chase ghosts.
+        radius = 135
         x1 = max(0, int(px - radius))
         y1 = max(0, int(py - radius))
         x2 = min(w, int(px + radius))
@@ -967,17 +1722,18 @@ def refine_object_pixel_with_color(frame, px, py, label="", query="", bbox_px=No
             })
             if score > best_score:
                 best_score = score
-                best = (bx, by, bw, bh, area)
+                best = (bx, by, bw, bh, area, contour)
 
     if best is None:
         return None
 
-    bx, by, bw, bh, area = best
+    bx, by, bw, bh, area, best_contour = best
     center_x = x1 + bx + bw / 2.0
     center_y = y1 + by + bh / 2.0
     grasp_fraction = CUBE_BBOX_GRASP_Y_FRACTION if is_cube_like else OBJECT_GRASP_Y_FRACTION
     grasp_x = center_x
     grasp_y = y1 + by + bh * grasp_fraction
+    orientation_image_deg = contour_axis_angle_deg(best_contour)
     return {
         "px": int(round(grasp_x)),
         "py": int(round(grasp_y)),
@@ -985,7 +1741,9 @@ def refine_object_pixel_with_color(frame, px, py, label="", query="", bbox_px=No
         "grasp_px": {"x": int(round(grasp_x)), "y": int(round(grasp_y))},
         "grasp_y_fraction": grasp_fraction,
         "source": "local_contour_grasp",
+        "visual_target_mode": "object_center",
         "area_px": round(area, 1),
+        "orientation_image_deg": round(float(orientation_image_deg), 1) if orientation_image_deg is not None else None,
         "candidate_count": len(candidates),
         "candidates": sorted(candidates, key=lambda c: c["score"], reverse=True)[:5],
         "bbox_px": {
@@ -1013,12 +1771,15 @@ Return ONLY valid JSON, no markdown.
 Return the center point of each relevant physical object.
 Do not return a point on the table, edge, side face, shadow, label, highlight, or internal grid.
 For cubes, return the center of the whole cube, not one colored cell.
+For bottles, test tubes, cups, and cylinders, return a point near the object's visual center and estimate the real object height_mm.
+Also estimate orientation_deg: the angle of the object's main top-face edge on the table.
+Do not copy 0 unless the object is actually straight. For a visibly rotated cube, return a non-zero orientation.
 
 Use this exact JSON format:
-[{{"point":[y,x],"label":"object name","height_mm":35,"orientation_deg":0}}]
+[{{"point":[y,x],"label":"object name","height_mm":35,"orientation_deg":15}}]
 
 Coordinates are normalized 0-1000 in [y,x] order.
-The robot code will apply the small grasp/kinematic offset."""
+The point must be on the object itself. Do not compensate for robot mechanics."""
 
     request_body = {
         "contents": [{"parts": [
@@ -1129,9 +1890,7 @@ The robot code will apply the small grasp/kinematic offset."""
                     "h": round((y_b - y_a) / img_h * 100, 2),
                 }
 
-        refine = None
-        if bbox_px is not None:
-            refine = refine_object_pixel_with_color(frame, px, py, p.get("label", ""), query, bbox_px)
+        refine = refine_object_pixel_with_color(frame, px, py, p.get("label", ""), query, bbox_px)
         refinement_failed = None
         if refine is not None:
             px, py = refine["px"], refine["py"]
@@ -1140,25 +1899,24 @@ The robot code will apply the small grasp/kinematic offset."""
             center_source = refine["source"]
         else:
             if bbox_px is None:
-                x_offset_px, y_offset_px = point_grasp_offset_px(px, py, img_w, img_h)
-                px = int(max(0, min(img_w - 1, px + x_offset_px)))
-                py = int(max(0, min(img_h - 1, py + y_offset_px)))
+                x_offset_px, y_offset_px = 0.0, 0.0
                 nx = px * 1000.0 / img_w
                 ny = py * 1000.0 / img_h
-                center_source = f"{center_source}_dynamic_grasp"
+                center_source = f"{center_source}_visual_center"
                 refinement_failed = {
-                    "reason": "point_only",
+                    "reason": "point_only_no_local_contour_using_raw_object_point",
                     "dynamic_x_offset_px": round(float(x_offset_px), 1),
                     "dynamic_y_offset_px": round(float(y_offset_px), 1),
                 }
             else:
-                refinement_failed = "no_local_contour"
+                refinement_failed = "bbox_no_local_contour"
         height_mm = p.get("height_mm", 35)
         try:
             height_mm = float(height_mm)
         except (TypeError, ValueError):
             height_mm = 35.0
-        height_mm = max(0.0, min(80.0, height_mm))
+        height_limit = 180.0 if _is_side_grasp_object(f"{p.get('label', '')} {query}") else 80.0
+        height_mm = max(0.0, min(height_limit, height_mm))
         robot_xy = pixel_to_robot(px, py, height_mm)
         if not robot_xy:
             continue
@@ -1172,24 +1930,53 @@ The robot code will apply the small grasp/kinematic offset."""
             # Keep the displayed detection point on the visual grasp point.
             # Robot-space X compensation is real, but reprojecting it made the
             # Live overlay look like the detector had clicked on the table.
-        ori = p.get("orientation_deg", 0)
+        bbox_candidates = bbox_grasp_candidates(
+            bbox_px,
+            height_mm,
+            img_w,
+            img_h,
+            CUBE_BBOX_GRASP_Y_FRACTION if cube_like else OBJECT_GRASP_Y_FRACTION,
+        )
+        raw_ori = p.get("orientation_deg", 0)
         try:
-            ori = float(ori)
+            raw_ori = float(raw_ori)
         except (TypeError, ValueError):
-            ori = 0.0
-        if abs(ori) < 8:
-            ori = 0.0
+            raw_ori = 0.0
+        if abs(raw_ori) < 8:
+            raw_ori = 0.0
+        table_orientation = None
+        orientation_source = "none"
+        if refine and refine.get("orientation_image_deg") is not None:
+            table_orientation = image_axis_to_robot_table_angle(px, py, refine["orientation_image_deg"], height_mm)
+            if table_orientation is not None:
+                orientation_source = "local_contour_robot_table"
+        if table_orientation is None and raw_ori != 0.0:
+            table_orientation = raw_ori
+            orientation_source = "gemini_fallback_assumed_table"
+        wrist_plan = plan_top_grasp_wrist_roll(rx, ry, table_orientation)
+        grasp_mode = "side" if _is_side_grasp_object(f"{p.get('label', '')} {query}") else wrist_plan["grasp_mode"]
+        if table_orientation is None:
+            table_orientation = wrist_plan["table_orientation_deg"]
         if bbox_px is not None:
             cv2.rectangle(debug_frame,
                           (bbox_px["x"], bbox_px["y"]),
                           (bbox_px["x"] + bbox_px["w"], bbox_px["y"] + bbox_px["h"]),
                           (0, 140, 255), 2)
+            for cand in bbox_candidates:
+                cp = cand["pixel"]
+                cv2.circle(debug_frame, (cp["x"], cp["y"]), 5, (0, 220, 255), -1)
         cv2.circle(debug_frame, (int(raw_px), int(raw_py)), 7, (255, 0, 255), -1)
         if refine and refine.get("center_px"):
             cv2.circle(debug_frame, (refine["center_px"]["x"], refine["center_px"]["y"]), 7, (255, 180, 0), -1)
+        if refine and refine.get("orientation_image_deg") is not None:
+            theta = np.radians(float(refine["orientation_image_deg"]))
+            line_len = 45
+            lx = int(np.cos(theta) * line_len)
+            ly = int(np.sin(theta) * line_len)
+            cv2.line(debug_frame, (int(px) - lx, int(py) - ly), (int(px) + lx, int(py) + ly), (0, 255, 255), 2)
         cv2.circle(debug_frame, (grasp_px_before_bias["x"], grasp_px_before_bias["y"]), 8, (255, 80, 0), -1)
         cv2.circle(debug_frame, (int(px), int(py)), 10, (0, 120, 255), -1)
-        cv2.putText(debug_frame, f"{p.get('label', 'object')} {center_source}",
+        cv2.putText(debug_frame, f"{p.get('label', 'object')} {center_source} wr={wrist_plan['wrist_roll_deg']}",
                     (int(px) + 12, max(20, int(py) - 12)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 120, 255), 2)
         objects.append({
@@ -1200,15 +1987,23 @@ The robot code will apply the small grasp/kinematic offset."""
             "grasp_pixel_before_bias": grasp_px_before_bias,
             "norm": {"x": round(float(nx) / 10.0, 2), "y": round(float(ny) / 10.0, 2)},
             "center_source": center_source,
+            "visual_target_mode": "object_center_no_hidden_offset",
             "cube_like": cube_like,
             "robot_bias_mm": robot_bias,
             "bbox_px": bbox_px,
             "bbox_norm": bbox_norm,
+            "bbox_grasp_candidates": bbox_candidates,
             "refinement": refine,
             "refinement_failed": refinement_failed,
             "robot": {"x": round(rx, 1), "y": round(ry, 1), "z": round(height_mm, 1)},
             "height_mm": round(height_mm, 1),
-            "orientation_deg": round(ori, 1),
+            "orientation_deg": round(float(table_orientation), 1),
+            "raw_orientation_deg": round(raw_ori, 1),
+            "orientation_source": orientation_source,
+            "table_orientation_deg": round(float(table_orientation), 1),
+            "wrist_roll_suggestion_deg": wrist_plan["wrist_roll_deg"],
+            "wrist_roll_plan": wrist_plan,
+            "grasp_mode": grasp_mode,
         })
     if objects:
         cv2.imwrite(VISION_DETECTION_DEBUG_PATH, debug_frame)
@@ -1255,6 +2050,7 @@ def stable_detect_object(query, samples=3):
     ys = np.array([d["robot"]["y"] for d in detections], dtype=np.float64)
     hs = np.array([d.get("height_mm", 35) for d in detections], dtype=np.float64)
     oris = np.array([d.get("orientation_deg", 0) for d in detections], dtype=np.float64)
+    wrists = np.array([d.get("wrist_roll_suggestion_deg", WRIST_ROLL_NEUTRAL_DEG) for d in detections], dtype=np.float64)
     norm_xs = np.array([d.get("norm", {}).get("x", 0) for d in detections], dtype=np.float64)
     norm_ys = np.array([d.get("norm", {}).get("y", 0) for d in detections], dtype=np.float64)
 
@@ -1262,7 +2058,7 @@ def stable_detect_object(query, samples=3):
     dists = np.sqrt((xs - med_xy[0]) ** 2 + (ys - med_xy[1]) ** 2)
     keep = dists <= 35.0
     if np.sum(keep) >= 2:
-        xs, ys, hs, oris = xs[keep], ys[keep], hs[keep], oris[keep]
+        xs, ys, hs, oris, wrists = xs[keep], ys[keep], hs[keep], oris[keep], wrists[keep]
         norm_xs, norm_ys = norm_xs[keep], norm_ys[keep]
         kept = int(np.sum(keep))
     else:
@@ -1277,6 +2073,11 @@ def stable_detect_object(query, samples=3):
         },
         "height_mm": round(float(np.median(hs)), 1),
         "orientation_deg": round(float(np.median(oris)), 1),
+        "table_orientation_deg": round(float(np.median(oris)), 1),
+        "wrist_roll_suggestion_deg": round(float(np.median(wrists)), 1),
+        "grasp_mode": detections[0].get("grasp_mode", "top"),
+        "bbox_grasp_candidates": detections[0].get("bbox_grasp_candidates", []),
+        "bbox_px": detections[0].get("bbox_px"),
         "norm": {"x": round(float(np.median(norm_xs)), 2), "y": round(float(np.median(norm_ys)), 2)},
         "detections": detections,
         "samples": len(detections),
@@ -1294,13 +2095,18 @@ def agent_execute_function(fn_name, fn_args):
         if fn_name == "move_arm":
             x, y, z = fn_args.get("x", 200), fn_args.get("y", 0), fn_args.get("z", 200)
             wrist_roll_deg = fn_args.get("wrist_roll_deg", None)
-            return move_arm_direct(x, y, z, wrist_roll_deg)
+            wrist_pitch_deg = fn_args.get("wrist_pitch_deg", None)
+            return move_arm_direct(x, y, z, wrist_roll_deg, wrist_pitch_deg)
 
         elif fn_name == "open_gripper":
             return set_gripper(True)
 
         elif fn_name == "close_gripper":
             return set_gripper(False)
+
+        elif fn_name == "wave_hello":
+            run_hello_wave()
+            return {"success": True, "message": "IRIS greeted the audience."}
 
         elif fn_name == "move_to_safe_height":
             return move_arm_direct(200, 0, 200)
@@ -1382,6 +2188,13 @@ Respond in JSON format: {{"completed": true/false, "confidence": 0.0-1.0, "reaso
             tolerance = fn_args.get("tolerance_mm", 5.0)
             return check_target_alignment(target_x, target_y, target_z, tolerance)
 
+        elif fn_name == "side_grasp_object":
+            return side_grasp_object_direct(
+                fn_args.get("object_description", "object"),
+                fn_args.get("grasp_z", None),
+                fn_args.get("lift_z", None),
+            )
+
         elif fn_name == "describe_scene":
             frame = get_camera_frame()
             if frame is None:
@@ -1425,8 +2238,8 @@ List all visible objects with approximate positions. Be concise. Respond in Roma
 
         elif fn_name == "trim_base_rotation":
             delta = float(fn_args.get("delta_deg", 0))
-            # Cap delta so the agent can't swing the base
-            delta = max(-8.0, min(8.0, delta))
+            # Cap delta so the agent can't swing the base.
+            delta = max(-FINAL_ALIGN_MAX_BASE_DELTA_DEG, min(FINAL_ALIGN_MAX_BASE_DELTA_DEG, delta))
             cfg = SERVO_CONFIG['base_rotation']
             current = target_angles.get(6, current_angles.get(6, cfg['offset']))
             new_angle = max(cfg['min'], min(cfg['max'], current + delta))
@@ -1450,15 +2263,14 @@ Use the robot coordinate system:
 - Y larger = left.
 - Y smaller = right.
 
-If not aligned, suggest a numeric correction large enough to matter.
-Prefer 10-18mm steps. Use up to 25mm if the gripper is clearly in front/back/left/right of the object.
-If rotation is wrong, suggest wrist_roll_delta_deg, maximum +/-20.
-For small final left/right errors near the object, you may also suggest base_servo_delta_deg:
-- this is a DELTA applied to the current base servo angle — there is no fixed neutral.
-- look at where the gripper sits in the image relative to the object and decide:
-  negative delta moves the gripper LEFT.
-  positive delta moves the gripper RIGHT.
-- keep it small, usually +/-2 to +/-5 degrees, max +/-8.
+This is a final sanity check only. Do not ask for motion unless the object is clearly outside the gripper.
+DON'T OVERTHINK IT. If the object is visibly between the gripper jaws, mark aligned=true even if it is not visually perfect.
+Do not suggest tiny cosmetic corrections. If the gripper can probably close on it, accept it.
+Corrections are handled earlier by align_before_descent. Here, prefer aligned=true or requires redetection.
+If rotation is badly wrong, mention it in reasoning but keep wrist_roll_delta_deg=0 here.
+For wrist_roll_delta_deg, use image-space signs:
+- positive = gripper should rotate clockwise in the camera image.
+- negative = gripper should rotate counter-clockwise in the camera image.
 Respond ONLY in JSON:
 {{
   "aligned": true/false,
@@ -1494,9 +2306,46 @@ Respond ONLY in JSON:
                 clean = clean.rsplit("```", 1)[0]
             try:
                 check = json.loads(clean.strip())
+                raw_wr_delta = float(np.clip(
+                    _safe_float(check.get("wrist_roll_delta_deg", 0.0), 0.0),
+                    -FINAL_ALIGN_MAX_WRIST_DELTA_DEG,
+                    FINAL_ALIGN_MAX_WRIST_DELTA_DEG,
+                ))
+                check["raw_image_wrist_roll_delta_deg"] = round(raw_wr_delta, 1)
+                check["wrist_roll_delta_deg"] = round(float(np.clip(
+                    raw_wr_delta * WRIST_ROLL_VISUAL_CORRECTION_SIGN,
+                    -FINAL_ALIGN_MAX_WRIST_DELTA_DEG,
+                    FINAL_ALIGN_MAX_WRIST_DELTA_DEG,
+                )), 1)
+                check["visual_correction_sign"] = WRIST_ROLL_VISUAL_CORRECTION_SIGN
                 return {"success": True, **check}
             except:
                 return {"success": True, "aligned": False, "confidence": 0, "adjustment": text[:200]}
+
+        elif fn_name == "check_wrist_roll_alignment":
+            return check_wrist_roll_alignment_direct(
+                fn_args.get("object_description", "object"),
+                fn_args.get("current_wrist_roll_deg", last_wrist_roll[0]),
+            )
+
+        elif fn_name == "align_before_descent":
+            return align_before_descent_direct(
+                fn_args.get("object_description", "object"),
+                fn_args.get("target_x", 200),
+                fn_args.get("target_y", 0),
+                fn_args.get("current_wrist_roll_deg", last_wrist_roll[0]),
+                fn_args.get("target_z", PRE_GRASP_ROTATE_Z_MM),
+            )
+
+        elif fn_name == "align_gripper_for_close":
+            return align_gripper_for_close_direct(
+                fn_args.get("object_description", "object"),
+                fn_args.get("target_x", 200),
+                fn_args.get("target_y", 0),
+                fn_args.get("target_z", 0),
+                fn_args.get("wrist_roll_deg", None),
+                fn_args.get("max_corrections", FINAL_ALIGN_MAX_CORRECTIONS),
+            )
 
         else:
             return {"error": f"Unknown function: {fn_name}"}
@@ -1569,10 +2418,19 @@ def _servo_dict_to_ik_seed(seed_servos):
     return seed if used else None
 
 
-def solve_ik(target_xyz, return_angles=False, seed_servos=None):
+def _servo_deg_to_ik_rad(joint_name, servo_deg):
+    cfg = SERVO_CONFIG[joint_name]
+    servo_deg = float(np.clip(float(servo_deg), cfg['min'], cfg['max']))
+    ik_deg = (servo_deg - cfg['offset']) / cfg['dir']
+    return np.radians(ik_deg)
+
+
+def solve_ik(target_xyz, return_angles=False, seed_servos=None, wrist_pitch_deg=None):
     """Solve IK for target [x,y,z] in meters. Returns servo angles dict.
     Optional seed_servos={ch:deg} biases the solver toward a solution close to
-    that current pose (used by smooth pattern mode in the visualizer)."""
+    that current pose (used by smooth pattern mode in the visualizer).
+    Optional wrist_pitch_deg biases IK toward a tool pitch orientation instead
+    of overriding wrist pitch after the solve, which would move the tip."""
     # Adaptive seed based on target height
     target_z = target_xyz[2]
     target_x = target_xyz[0]
@@ -1588,15 +2446,19 @@ def solve_ik(target_xyz, return_angles=False, seed_servos=None):
     best_ik_result = None
     best_score = float('inf')
 
+    wrist_hint = None
+    if wrist_pitch_deg is not None:
+        wrist_hint = _servo_deg_to_ik_rad("wrist_pitch", wrist_pitch_deg)
+
     seeds = [
         # Seed 1: adaptive based on target
-        {'shoulder': shoulder_hint, 'elbow': -shoulder_hint * 0.5, 'wrist': 0},
+        {'shoulder': shoulder_hint, 'elbow': -shoulder_hint * 0.5, 'wrist': wrist_hint if wrist_hint is not None else 0},
         # Seed 2: shoulder very high
-        {'shoulder': np.radians(80), 'elbow': np.radians(-60), 'wrist': np.radians(-20)},
+        {'shoulder': np.radians(80), 'elbow': np.radians(-60), 'wrist': wrist_hint if wrist_hint is not None else np.radians(-20)},
         # Seed 3: moderate
-        {'shoulder': np.radians(45), 'elbow': np.radians(-30), 'wrist': np.radians(10)},
+        {'shoulder': np.radians(45), 'elbow': np.radians(-30), 'wrist': wrist_hint if wrist_hint is not None else np.radians(10)},
         # Seed 4: straight up
-        {'shoulder': np.radians(60), 'elbow': np.radians(-90), 'wrist': np.radians(30)},
+        {'shoulder': np.radians(60), 'elbow': np.radians(-90), 'wrist': wrist_hint if wrist_hint is not None else np.radians(30)},
     ]
 
     warm_seed_vec = _servo_dict_to_ik_seed(seed_servos)
@@ -1657,6 +2519,14 @@ def solve_ik(target_xyz, return_angles=False, seed_servos=None):
             # branch flipping → 12mm penalty, which easily beats a 0mm IK error
             # tie between two valid branches.
             score += 0.4 * joint_dist
+
+        if wrist_pitch_deg is not None:
+            wp_ch = SERVO_CONFIG['wrist_pitch']['ch']
+            wp_error = abs(float(servo_angles[wp_ch]) - float(wrist_pitch_deg))
+            # Wrist pitch is a preference, not a reason to miss the target.
+            # A high weight made far/high moves look unreachable even when the
+            # arm could physically reach them with a slightly different pitch.
+            score += 0.25 * wp_error
 
         if score < best_score:
             best_score = score
@@ -1749,6 +2619,24 @@ def send_raw(ch, angle):
         ser.write(cmd.encode())
         time.sleep(0.005)
 
+
+def compensate_base_y_servo(angle):
+    """Pull base/Y rotation 16% back toward the 75° center."""
+    angle = float(angle)
+    cfg = SERVO_CONFIG['base_rotation']
+    compensated = BASE_Y_CENTER_DEG + (angle - BASE_Y_CENTER_DEG) * (1.0 - BASE_Y_INWARD_COMPENSATION)
+    return float(np.clip(compensated, cfg['min'], cfg['max']))
+
+
+def compensated_servo_targets(servo_angles):
+    """Return the physical servo targets that set_target() will send."""
+    out = dict(servo_angles)
+    ch = SERVO_CONFIG['base_rotation']['ch']
+    if ch in out:
+        out[ch] = int(round(compensate_base_y_servo(out[ch])))
+    return out
+
+
 def smooth_move_worker():
     global moving, STEP_SIZE, STEP_DELAY
     while moving:
@@ -1781,6 +2669,12 @@ def smooth_move_worker():
         time.sleep(STEP_DELAY if any_moving else 0.05)
 
 def set_target(ch, angle):
+    ch = int(ch)
+    if ch == SERVO_CONFIG['base_rotation']['ch']:
+        raw_angle = float(angle)
+        angle = compensate_base_y_servo(raw_angle)
+        if abs(angle - raw_angle) >= 0.05:
+            print(f"  Base/Y inward comp: {raw_angle:.1f}° → {angle:.1f}°")
     with move_lock:
         if ch not in current_angles:
             current_angles[ch] = angle
@@ -1936,6 +2830,212 @@ def stop_pattern():
         print("✓ Pattern stopped")
     return {"ok": True, "was_running": was_running}
 
+
+def ps4_manual_status():
+    """Return status for the optional PS4 manual controller subprocess."""
+    global ps4_manual_process
+    with ps4_manual_lock:
+        proc = ps4_manual_process
+        if proc is not None and proc.poll() is not None:
+            ps4_manual_process = None
+            proc = None
+        return {
+            "ok": True,
+            "running": proc is not None,
+            "pid": proc.pid if proc is not None else None,
+            "script": PS4_MANUAL_SCRIPT_PATH,
+            "python": PS4_MANUAL_PYTHON,
+            "log": PS4_MANUAL_LOG_PATH,
+        }
+
+
+def start_ps4_manual_process():
+    """Start the fresh PS4 controller script from the visualizer/bridge."""
+    global ps4_manual_process
+    with ps4_manual_lock:
+        if ps4_manual_process is not None and ps4_manual_process.poll() is None:
+            return ps4_manual_status()
+        if not os.path.exists(PS4_MANUAL_SCRIPT_PATH):
+            return {"ok": False, "running": False, "error": "iris_ps4_manual.py not found"}
+
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+        log_file = open(PS4_MANUAL_LOG_PATH, "a", buffering=1)
+        log_file.write("\n--- starting PS4 manual control ---\n")
+        ps4_manual_process = subprocess.Popen(
+            [PS4_MANUAL_PYTHON, PS4_MANUAL_SCRIPT_PATH, "--bridge", f"http://localhost:{HTTP_PORT}"],
+            cwd=PROJECT_ROOT,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            env=env,
+        )
+        return ps4_manual_status()
+
+
+def stop_ps4_manual_process():
+    """Stop the PS4 controller subprocess if it is running."""
+    global ps4_manual_process
+    with ps4_manual_lock:
+        proc = ps4_manual_process
+        if proc is None or proc.poll() is not None:
+            ps4_manual_process = None
+            return {"ok": True, "running": False}
+
+        proc.terminate()
+        try:
+            proc.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=2.0)
+        ps4_manual_process = None
+        return {"ok": True, "running": False}
+
+
+def set_hello_pose(pose):
+    for ch, angle in pose.items():
+        set_target(ch, angle)
+
+
+def run_hello_wave():
+    global hello_running
+    with hello_lock:
+        if hello_running:
+            return
+        hello_running = True
+    try:
+        stop_pattern()
+        print("✓ IRIS hello wave started")
+        set_hello_pose(HELLO_POSE_A)
+        time.sleep(1.4)
+
+        low_wr, high_wr = HELLO_WRIST_ROLL_SWING
+        for _ in range(HELLO_WAVE_REPETITIONS):
+            steps = [
+                (HELLO_POSE_A[6], low_wr, 0.28),
+                (HELLO_POSE_A[6], high_wr, 0.28),
+                (HELLO_POSE_B[6], low_wr, 0.65),
+                (HELLO_POSE_B[6], high_wr, 0.28),
+                (HELLO_POSE_B[6], low_wr, 0.28),
+                (HELLO_POSE_A[6], high_wr, 0.65),
+            ]
+            for base_angle, wrist_roll, delay_s in steps:
+                pose = dict(HELLO_POSE_A)
+                pose[6] = base_angle
+                pose[1] = wrist_roll
+                set_hello_pose(pose)
+                time.sleep(delay_s)
+
+        set_hello_pose(HELLO_POSE_A)
+        print("✓ IRIS hello wave done")
+    finally:
+        with hello_lock:
+            hello_running = False
+
+
+def start_hello_wave():
+    with hello_lock:
+        if hello_running:
+            return {"ok": True, "running": True}
+    t = threading.Thread(target=run_hello_wave, daemon=True)
+    t.start()
+    return {"ok": True, "running": True}
+
+
+def hello_wave_status():
+    with hello_lock:
+        return {"ok": True, "running": hello_running}
+
+
+def set_dance_pose(pose):
+    for ch, angle in pose.items():
+        set_target(ch, angle)
+
+
+def sleep_dance(seconds):
+    deadline = time.time() + max(0.0, seconds)
+    while time.time() < deadline:
+        if dance_stop_event.is_set():
+            return False
+        time.sleep(min(0.05, deadline - time.time()))
+    return True
+
+
+def apply_dance_speed(profile_name):
+    global STEP_SIZE, STEP_DELAY
+    step_size, step_delay = DANCE_SPEED_PROFILES.get(profile_name, DANCE_SPEED_PROFILES["medium"])
+    STEP_SIZE = float(np.clip(step_size, DANCE_MIN_STEP_SIZE, DANCE_MAX_STEP_SIZE))
+    STEP_DELAY = step_delay
+
+
+def run_dance(seconds=DANCE_DEFAULT_DURATION_SECONDS, bpm=DANCE_DEFAULT_BPM):
+    global dance_running, STEP_SIZE, STEP_DELAY
+    with dance_lock:
+        if dance_running:
+            return
+        dance_running = True
+        dance_stop_event.clear()
+
+    seconds = float(np.clip(seconds, 1.0, DANCE_MAX_DURATION_SECONDS))
+    beat_s = 60.0 / max(40.0, min(220.0, float(bpm)))
+    started = time.time()
+    old_step_size = STEP_SIZE
+    old_step_delay = STEP_DELAY
+    try:
+        stop_pattern()
+        print(f"✓ IRIS dance started ({seconds:.1f}s @ {bpm:.1f} BPM)")
+        apply_dance_speed("slow")
+        set_dance_pose(DANCE_HOME_POSE)
+        if not sleep_dance(beat_s * 2.0):
+            return
+
+        phase_index = -1
+        step_index = 0
+        while time.time() - started < seconds and not dance_stop_event.is_set():
+            elapsed = time.time() - started
+            phase = next((p for p in DANCE_PHASES if elapsed < p["until"]), DANCE_PHASES[-1])
+            next_phase_index = DANCE_PHASES.index(phase)
+            if next_phase_index != phase_index:
+                phase_index = next_phase_index
+                step_index = 0
+                apply_dance_speed(phase.get("speed", "medium"))
+                print(f"  Dance phase → {phase['name']}")
+
+            pose_delta, beats = phase["steps"][step_index % len(phase["steps"])]
+            pose = dict(DANCE_HOME_POSE)
+            pose.update(pose_delta)
+            set_dance_pose(pose)
+            if not sleep_dance(beat_s * beats):
+                break
+            step_index += 1
+
+        set_dance_pose(DANCE_HOME_POSE)
+        print("✓ IRIS dance done")
+    finally:
+        STEP_SIZE = old_step_size
+        STEP_DELAY = old_step_delay
+        with dance_lock:
+            dance_running = False
+            dance_stop_event.clear()
+
+
+def start_dance(seconds=DANCE_DEFAULT_DURATION_SECONDS, bpm=DANCE_DEFAULT_BPM):
+    with dance_lock:
+        if dance_running:
+            return {"ok": True, "running": True}
+    t = threading.Thread(target=run_dance, args=(seconds, bpm), daemon=True)
+    t.start()
+    return {"ok": True, "running": True, "duration_seconds": float(seconds), "bpm": float(bpm)}
+
+
+def stop_dance():
+    dance_stop_event.set()
+    return {"ok": True, "running": False}
+
+
+def dance_status():
+    with dance_lock:
+        return {"ok": True, "running": dance_running}
+
 # ─── HTTP Server ───
 class BridgeHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
@@ -1994,7 +3094,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
             ch = int(params.get("ch", [0])[0])
             angle = int(params.get("angle", [90])[0])
             set_target(ch, angle)
-            self.respond_json({"ok": True, "ch": ch, "angle": angle})
+            sent_angle = compensate_base_y_servo(angle) if ch == SERVO_CONFIG['base_rotation']['ch'] else angle
+            self.respond_json({"ok": True, "ch": ch, "angle": angle, "sent_angle": round(float(sent_angle), 1)})
             return
 
         if parsed.path == "/speed":
@@ -2032,6 +3133,18 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/camera/status":
             self.respond_json({"running": camera_running})
+            return
+
+        if parsed.path == "/gamepad/status":
+            self.respond_json(ps4_manual_status())
+            return
+
+        if parsed.path == "/hello/status":
+            self.respond_json(hello_wave_status())
+            return
+
+        if parsed.path == "/dance/status":
+            self.respond_json(dance_status())
             return
 
         # ─── MJPEG video feed ───
@@ -2086,6 +3199,19 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self.respond_json({"error": "No camera frame"}, 503)
             return
 
+        if parsed.path == "/media/iris_dance.mp3":
+            if os.path.exists(DANCE_AUDIO_PATH):
+                self.send_response(200)
+                self.send_header("Content-Type", "audio/mpeg")
+                self.send_header("Content-Length", str(os.path.getsize(DANCE_AUDIO_PATH)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                with open(DANCE_AUDIO_PATH, "rb") as f:
+                    self.wfile.write(f.read())
+                return
+            self.respond_json({"error": "iris_dance.mp3 not found"}, 404)
+            return
+
         # ─── Serve HTML visualizer ───
         if parsed.path == "/" or parsed.path == "/index.html":
             html_path = os.path.join(SCRIPT_DIR, "iris_visualizer.html")
@@ -2119,12 +3245,41 @@ class BridgeHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length).decode()
 
+        if parsed.path == "/gamepad/start":
+            self.respond_json(start_ps4_manual_process())
+            return
+
+        if parsed.path == "/gamepad/stop":
+            self.respond_json(stop_ps4_manual_process())
+            return
+
+        if parsed.path == "/hello":
+            self.respond_json(start_hello_wave())
+            return
+
+        if parsed.path == "/dance/start":
+            try:
+                data = json.loads(body) if body else {}
+            except Exception:
+                data = {}
+            seconds = float(data.get("duration_seconds", 30.0))
+            bpm = float(data.get("bpm", DANCE_DEFAULT_BPM))
+            self.respond_json(start_dance(seconds, bpm))
+            return
+
+        if parsed.path == "/dance/stop":
+            self.respond_json(stop_dance())
+            return
+
         if parsed.path == "/servos":
             try:
                 data = json.loads(body)
+                sent = {}
                 for ch_str, angle in data.items():
-                    set_target(int(ch_str), int(angle))
-                self.respond_json({"ok": True})
+                    ch = int(ch_str)
+                    set_target(ch, int(angle))
+                    sent[ch] = round(float(compensate_base_y_servo(angle) if ch == SERVO_CONFIG['base_rotation']['ch'] else angle), 1)
+                self.respond_json({"ok": True, "sent": sent})
             except Exception as e:
                 self.respond_json({"error": str(e)}, 400)
             return
@@ -2160,20 +3315,16 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 z_adjusted = data["z"] - PLATFORM_HEIGHT_MM
                 target_m = [data["x"] / 1000, data["y"] / 1000, z_adjusted / 1000]
                 seed_servos = data.get("seed_servos")  # optional {ch: deg} — smooth/warm-start
-                servo_angles, error, actual_mm, ik_result = solve_ik(target_m, return_angles=True, seed_servos=seed_servos)
-
-                # ── Post-IK wrist roll override ──
                 wrist_pitch_deg = data.get("wrist_pitch_deg", None)
+                servo_angles, error, actual_mm, ik_result = solve_ik(
+                    target_m,
+                    return_angles=True,
+                    seed_servos=seed_servos,
+                    wrist_pitch_deg=wrist_pitch_deg,
+                )
+
                 wp_cfg = SERVO_CONFIG['wrist_pitch']
                 wp_angle = servo_angles[wp_cfg['ch']]
-                if wrist_pitch_deg is not None:
-                    wp_angle = int(round(np.clip(wrist_pitch_deg, wp_cfg['min'], wp_cfg['max'])))
-                    servo_angles[wp_cfg['ch']] = wp_angle
-                    ik_result = np.array(ik_result, dtype=float)
-                    ik_result[4] = np.radians((wp_angle - wp_cfg['offset']) / wp_cfg['dir'])
-                    fk_result = iris_chain.forward_kinematics(ik_result)
-                    actual_mm = fk_result[:3, 3] * 1000
-                    error = np.linalg.norm(np.array(target_m) - fk_result[:3, 3]) * 1000
 
                 wrist_roll_deg = data.get("wrist_roll_deg", None)
                 wr_cfg = SERVO_CONFIG['wrist_roll']
@@ -2183,11 +3334,13 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     wr_angle = wr_cfg['offset']
                 servo_angles[wr_cfg['ch']] = wr_angle
                 servo_angles[5] = 180 - servo_angles[4]
+                sent_servo_angles = compensated_servo_targets(servo_angles)
 
                 print(f"  IK: target=({data['x']}, {data['y']}, {data['z']})mm "
                       f"→ actual=({actual_mm[0]:.1f}, {actual_mm[1]:.1f}, {actual_mm[2]:.1f})mm "
                       f"err={error:.1f}mm wp={wp_angle}° wr={wr_angle}°")
-                print(f"  Servos: {servo_angles}")
+                print(f"  Servos raw: {servo_angles}")
+                print(f"  Servos sent: {sent_servo_angles}")
 
                 # Send to robot
                 if data.get("send", False):
@@ -2196,7 +3349,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
                 self.respond_json({
                     "ok": True,
-                    "servos": servo_angles,
+                    "servos": sent_servo_angles,
+                    "ik_servos_raw": servo_angles,
                     "error_mm": round(error, 2),
                     "actual": {
                         "x": round(actual_mm[0], 1),
@@ -2262,8 +3416,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     wr_angle = wr_cfg['offset']
                 servo_angles[wr_cfg['ch']] = wr_angle
                 servo_angles[5] = 180 - servo_angles[4]
+                sent_servo_angles = compensated_servo_targets(servo_angles)
 
-                print(f"    → IK err={error:.1f}mm wr={wr_angle}° servos={servo_angles}")
+                print(f"    → IK err={error:.1f}mm wr={wr_angle}° servos={sent_servo_angles} raw={servo_angles}")
 
                 if send:
                     for ch, angle in servo_angles.items():
@@ -2275,7 +3430,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     "robot": {"x": round(rx, 1), "y": round(ry, 1), "z": pick_z},
                     "xy_plane_z": round(xy_z, 1),
                     "correction_applied": apply_corr and vision_correction is not None,
-                    "servos": servo_angles,
+                    "servos": sent_servo_angles,
+                    "ik_servos_raw": servo_angles,
                     "error_mm": round(error, 2),
                     "actual": {
                         "x": round(actual_mm[0], 1),
@@ -2353,11 +3509,13 @@ The points are in [y, x] format normalized to 0-1000."""
                     target = robot_points[0]
                     target_m = [target["robot"]["x"] / 1000, target["robot"]["y"] / 1000, pick_z / 1000]
                     servo_angles, error, actual_mm = solve_ik(target_m)
+                    sent_servo_angles = compensated_servo_targets(servo_angles)
                     for ch, angle in servo_angles.items():
                         set_target(ch, angle)
                     ik_result = {
                         "target": target["label"],
-                        "servos": servo_angles,
+                        "servos": sent_servo_angles,
+                        "ik_servos_raw": servo_angles,
                         "error_mm": round(error, 2)
                     }
                     print(f"    → Moving to '{target['label']}' err={error:.1f}mm")
@@ -2504,6 +3662,8 @@ The points are in [y, x] format normalized to 0-1000."""
                 agent_tools = AGENT_TOOL_DECLARATIONS
                 max_turns = 30
                 actions_log = []
+                object_missing_count = 0
+                failed_motion_count = 0
 
                 print(f"  🤖 Robotics execute: '{task}'")
 
@@ -2588,6 +3748,47 @@ The points are in [y, x] format normalized to 0-1000."""
                         actions_log.append({"name": fn_name, "args": fn_args, "result": fn_result})
                         send_sse("action_result", {"name": fn_name, "result": fn_result})
 
+                        result_error = str(fn_result.get("error", "")).lower() if isinstance(fn_result, dict) else ""
+                        object_missing = (
+                            fn_name in ("detect_objects", "side_grasp_object")
+                            and (
+                                fn_result.get("success") is False
+                                or fn_result.get("count") == 0
+                                or "not detected" in result_error
+                                or "object not detected" in result_error
+                            )
+                        )
+                        if object_missing:
+                            object_missing_count += 1
+                        elif fn_name in ("detect_objects", "side_grasp_object") and fn_result.get("success") is not False:
+                            object_missing_count = 0
+
+                        motion_failed = (
+                            fn_name in ("move_arm", "move_to_safe_height", "side_grasp_object")
+                            and fn_result.get("success") is False
+                            and ("ik error" in result_error or "unreachable" in result_error)
+                        )
+                        if motion_failed:
+                            failed_motion_count += 1
+                        elif fn_result.get("success") is not False:
+                            failed_motion_count = 0
+
+                        if object_missing_count >= 2:
+                            summary = "Mă opresc: nu mai detectez obiectul cerut, deci probabil a fost luat/mutat sau nu mai este în cadru."
+                            robotics_status[0] = "idle"
+                            robotics_status[1] = "object missing"
+                            send_sse("done", {"summary": summary, "actions": actions_log, "stopped": True, "reason": "object_missing"})
+                            print(f"  🛑 Robotics stopped: object missing after {object_missing_count} attempts")
+                            return
+
+                        if failed_motion_count >= 3:
+                            summary = "Mă opresc: mișcările cerute nu sunt rezolvate stabil de IK în poziția asta."
+                            robotics_status[0] = "idle"
+                            robotics_status[1] = "motion failed"
+                            send_sse("done", {"summary": summary, "actions": actions_log, "stopped": True, "reason": "motion_failed"})
+                            print(f"  🛑 Robotics stopped: repeated motion failure")
+                            return
+
                         function_responses.append({
                             "functionResponse": {
                                 "name": fn_name,
@@ -2597,7 +3798,9 @@ The points are in [y, x] format normalized to 0-1000."""
 
                     history.append({"role": "user", "parts": function_responses})
 
-                send_sse("done", {"summary": "Max turns reached", "actions": actions_log})
+                robotics_status[0] = "idle"
+                robotics_status[1] = "max turns"
+                send_sse("done", {"summary": "Mă opresc: am atins limita de pași pentru task-ul curent.", "actions": actions_log, "stopped": True, "reason": "max_turns"})
 
             except Exception as e:
                 print(f"  Robotics execute error: {e}")
@@ -2761,6 +3964,11 @@ if __name__ == "__main__":
     print(f"  POST /robotics/describe — Robotics scene description")
     print(f"  POST /agent/chat    — Agent chat (SSE streaming)")
     print(f"  POST /vision/click  — pixel → robot → IK")
+    print(f"  POST /hello         — audience greeting wave")
+    print(f"  POST /dance/start   — 30s music dance routine")
+    print(f"  POST /dance/stop    — stop music dance routine")
+    print(f"  POST /gamepad/start — start PS4 manual controller")
+    print(f"  POST /gamepad/stop  — stop PS4 manual controller")
     print(f"  GET  /gripper       — instant gripper (0=open, 70=closed)")
     print("Press Ctrl+C to stop\n")
 
@@ -2773,6 +3981,7 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\n● Shutting down...")
         moving = False
+        stop_ps4_manual_process()
         stop_camera()
         if ser and ser.is_open:
             ser.close()

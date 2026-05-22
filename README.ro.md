@@ -10,6 +10,16 @@ Proiectul nu este gândit ca un robot cu mișcări preprogramate rigid. Ideea lu
 
 [Prezentarea proiectului](docs/prezentare-iris.pdf)
 
+## Update Versiunea 7
+
+Acest release se concentrează pe stack-ul actual IRIS V7:
+
+- unelte Gemini Live pentru gesturi directe ale robotului, precum salut și dans;
+- rutină de dans de 30 de secunde cu MP3 local și faze de viteză pe beat. Pune fișierul audio local la `files/media/iris_dance.mp3`;
+- limite mai sigure pentru shoulder, cu CH4 limitat la 30-160 grade și CH5 oglindit din CH4;
+- script nou de control manual cu controller PS4 prin bridge;
+- controale noi în visualizer pentru PS4, salut și dans pe muzică.
+
 ## Ordinea de Construire
 
 Ca să construiești IRIS de la zero, urmează proiectul în ordinea asta:
@@ -98,7 +108,7 @@ http://localhost:8765/live
 Control manual opțional cu manetă:
 
 ```bash
-python files/iris_gamepad.py
+python files/iris_ps4_manual.py
 ```
 
 ## Ce Este IRIS
@@ -160,7 +170,8 @@ files/iris_visualizer.html Vizualizator în navigator web pentru cameră, braț 
 files/iris_vision_v3.py    Calibrare a spațiului de lucru cu placă ChArUco
 files/calibrate_camera.py  Calibrare intrinsecă pentru cameră
 files/iris_arm.urdf        Model cinematic folosit de IKPy
-files/iris_gamepad.py      Control manual opțional cu manetă
+files/iris_ps4_manual.py   Control manual opțional cu controller PS4
+files/media/               Folder local, ignorat de git, pentru audio demo
 hardware/                  Note pentru partea fizică și piese personalizate
 docs/                      Documentație, configurare, calibrare și prezentare
 ```

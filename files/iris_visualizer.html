@@ -45,9 +45,9 @@ const TOTAL_REACH = DIMS.shoulder_h + DIMS.elbow + DIMS.wrist_pitch + DIMS.wrist
 /* Servo configuration */
 const SERVO_LIST = [
   { key:"base",        ch:6, offset:75,  min:0,   max:180, dir:1,  label:"Base Rotation", color:"#64748b" },
-  { key:"shoulder",    ch:4, offset:160, min:0,   max:160, dir:-1, label:"Shoulder",       color:"#0ea5e9" },
-  { key:"elbow",       ch:3, offset:43,  min:20,  max:180, dir:-1, label:"Elbow",          color:"#10b981" },
-  { key:"wrist_pitch", ch:2, offset:83,  min:0,   max:170, dir:-1, label:"Wrist Pitch",    color:"#f59e0b" },
+  { key:"shoulder",    ch:4, offset:160, min:30,  max:160, dir:-1, label:"Shoulder",       color:"#0ea5e9" },
+  { key:"elbow",       ch:3, offset:25,  min:20,  max:180, dir:-1, label:"Elbow",          color:"#10b981" },
+  { key:"wrist_pitch", ch:2, offset:100, min:0,   max:170, dir:-1, label:"Wrist Pitch",    color:"#f59e0b" },
   { key:"wrist_roll",  ch:1, offset:55,  min:0,   max:180, dir:1,  label:"Wrist Roll",     color:"#8b5cf6" },
   { key:"gripper",     ch:0, offset:0,   min:0,   max:70,  dir:1,  label:"Gripper",        color:"#ef4444", isGripper:true },
 ];
@@ -181,6 +181,12 @@ function App() {
   const [ikError, setIkError] = useState(null);
   const [connected, setConnected] = useState(false);
   const [liveMode, setLiveMode] = useState(false);
+  const [gamepadRunning, setGamepadRunning] = useState(false);
+  const [gamepadStatus, setGamepadStatus] = useState(null);
+  const [helloRunning, setHelloRunning] = useState(false);
+  const [danceRunning, setDanceRunning] = useState(false);
+  const [danceAudioSrc, setDanceAudioSrc] = useState("");
+  const danceAudioTimer = useRef(null);
   const sendTimer = useRef(null);
   const [demoRunning, setDemoRunning] = useState(false);
   const [demoSpeed, setDemoSpeed] = useState(2000);
@@ -304,6 +310,90 @@ function App() {
   };
 
   const pushToRobot = () => sendAllServos(servoDeg);
+
+  const refreshGamepadStatus = () => {
+    fetch(BRIDGE_URL + "/gamepad/status")
+      .then(r => r.json())
+      .then(d => {
+        setGamepadStatus(d);
+        setGamepadRunning(Boolean(d.running));
+      })
+      .catch(() => {
+        setGamepadStatus(null);
+        setGamepadRunning(false);
+      });
+  };
+
+  const toggleGamepad = () => {
+    const path = gamepadRunning ? "/gamepad/stop" : "/gamepad/start";
+    fetch(BRIDGE_URL + path, { method: "POST" })
+      .then(r => r.json())
+      .then(d => {
+        setGamepadStatus(d);
+        setGamepadRunning(Boolean(d.running));
+      })
+      .catch(() => {});
+  };
+
+  const refreshHelloStatus = () => {
+    fetch(BRIDGE_URL + "/hello/status")
+      .then(r => r.json())
+      .then(d => setHelloRunning(Boolean(d.running)))
+      .catch(() => setHelloRunning(false));
+  };
+
+  const runHelloWave = () => {
+    fetch(BRIDGE_URL + "/hello", { method: "POST" })
+      .then(r => r.json())
+      .then(d => setHelloRunning(Boolean(d.running)))
+      .catch(() => {});
+  };
+
+  const refreshDanceStatus = () => {
+    fetch(BRIDGE_URL + "/dance/status")
+      .then(r => r.json())
+      .then(d => setDanceRunning(Boolean(d.running)))
+      .catch(() => setDanceRunning(false));
+  };
+
+  const startDance = () => {
+    setDanceAudioSrc(BRIDGE_URL + "/media/iris_dance.mp3");
+    fetch(BRIDGE_URL + "/dance/start", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ duration_seconds: 30, bpm: 100.25 })
+    })
+      .then(r => r.json())
+      .then(d => setDanceRunning(Boolean(d.running)))
+      .catch(() => {});
+    if (danceAudioTimer.current) clearTimeout(danceAudioTimer.current);
+    danceAudioTimer.current = setTimeout(() => {
+      setDanceAudioSrc("");
+      refreshDanceStatus();
+    }, 31000);
+  };
+
+  const stopDance = () => {
+    fetch(BRIDGE_URL + "/dance/stop", { method: "POST" }).catch(() => {});
+    setDanceAudioSrc("");
+    setDanceRunning(false);
+    if (danceAudioTimer.current) clearTimeout(danceAudioTimer.current);
+  };
+
+  useEffect(() => {
+    refreshGamepadStatus();
+    refreshHelloStatus();
+    refreshDanceStatus();
+    const iv = setInterval(() => {
+      refreshGamepadStatus();
+      refreshHelloStatus();
+      refreshDanceStatus();
+    }, 2500);
+    return () => {
+      clearInterval(iv);
+      if (danceAudioTimer.current) clearTimeout(danceAudioTimer.current);
+    };
+  }, []);
 
   const joints = computeFK(servoDeg);
   const ee = joints[joints.length-1];
@@ -1511,6 +1601,95 @@ function App() {
             <div style={{fontSize:10,color:"#2a3f55",lineHeight:1.5}}>
               Run: <span style={{color:"#3b5068"}}>python3 iris_bridge.py</span>
             </div>
+          )}
+        </div>
+
+        {/* PS4 Manual Control */}
+        <div style={{background:"#0d1117",borderRadius:16,border:`1px solid ${gamepadRunning?"#8b5cf6":"#1b2838"}`,padding:14,transition:"border-color 0.3s"}}>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+            <div style={{width:10,height:10,borderRadius:"50%",background:gamepadRunning?"#8b5cf6":"#3b5068",boxShadow:gamepadRunning?"0 0 8px #8b5cf6":"none"}}/>
+            <span style={{fontFamily:"Outfit",fontSize:13,fontWeight:700,color:gamepadRunning?"#c4b5fd":"#3b5068",letterSpacing:1}}>
+              {gamepadRunning ? "PS4 CONTROL ON" : "PS4 CONTROL"}
+            </span>
+          </div>
+          <button onClick={toggleGamepad} disabled={!connected} style={{
+            width:"100%",
+            background:gamepadRunning?"#8b5cf6":connected?"#1b2838":"#111927",
+            border:`1px solid ${gamepadRunning?"#8b5cf6":"#2a3f55"}`,
+            color:gamepadRunning?"#080c14":connected?"#c4b5fd":"#2a3f55",
+            borderRadius:8,padding:"9px 12px",fontSize:11,
+            cursor:connected?"pointer":"not-allowed",fontFamily:"Outfit",fontWeight:700,
+            letterSpacing:0.8,transition:"all 0.2s"
+          }}>
+            {gamepadRunning ? "STOP CONTROLLER" : "START CONTROLLER"}
+          </button>
+          <div style={{fontSize:9,color:"#3b5068",lineHeight:1.6,marginTop:9}}>
+            R1 open · L1 close · R2/L2 CH1<br/>
+            RS Y/X CH3/CH2 · LS X inv/Y CH6/CH4
+          </div>
+          {gamepadStatus && gamepadStatus.pid && (
+            <div style={{fontSize:9,color:"#2a3f55",marginTop:6}}>pid {gamepadStatus.pid}</div>
+          )}
+        </div>
+
+        {/* Hello Wave */}
+        <div style={{background:"#0d1117",borderRadius:16,border:`1px solid ${helloRunning?"#f97316":"#1b2838"}`,padding:14,transition:"border-color 0.3s"}}>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+            <div style={{width:10,height:10,borderRadius:"50%",background:helloRunning?"#f97316":"#3b5068",boxShadow:helloRunning?"0 0 8px #f97316":"none"}}/>
+            <span style={{fontFamily:"Outfit",fontSize:13,fontWeight:700,color:helloRunning?"#fed7aa":"#3b5068",letterSpacing:1}}>
+              {helloRunning ? "HELLO RUNNING" : "AUDIENCE HELLO"}
+            </span>
+          </div>
+          <button onClick={runHelloWave} disabled={!connected || helloRunning} style={{
+            width:"100%",
+            background:helloRunning?"#3b2a1a":connected?"linear-gradient(135deg,#f97316,#ea580c)":"#111927",
+            border:`1px solid ${helloRunning?"#f97316":connected?"#f97316":"#2a3f55"}`,
+            color:connected && !helloRunning ? "#080c14" : "#3b5068",
+            borderRadius:8,padding:"9px 12px",fontSize:11,
+            cursor:connected && !helloRunning ? "pointer":"not-allowed",fontFamily:"Outfit",fontWeight:700,
+            letterSpacing:0.8,transition:"all 0.2s"
+          }}>
+            {helloRunning ? "WAVING..." : "HELLO"}
+          </button>
+          <div style={{fontSize:9,color:"#3b5068",lineHeight:1.6,marginTop:9}}>
+            3x CH6 127° ↔ 33° · CH1 wrist wave
+          </div>
+        </div>
+
+        {/* Dance Routine */}
+        <div style={{background:"#0d1117",borderRadius:16,border:`1px solid ${danceRunning?"#22c55e":"#1b2838"}`,padding:14,transition:"border-color 0.3s"}}>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+            <div style={{width:10,height:10,borderRadius:"50%",background:danceRunning?"#22c55e":"#3b5068",boxShadow:danceRunning?"0 0 8px #22c55e":"none"}}/>
+            <span style={{fontFamily:"Outfit",fontSize:13,fontWeight:700,color:danceRunning?"#bbf7d0":"#3b5068",letterSpacing:1}}>
+              {danceRunning ? "DANCE RUNNING" : "MUSIC DANCE"}
+            </span>
+          </div>
+          <div style={{display:"flex",gap:8}}>
+            <button onClick={danceRunning ? stopDance : startDance} disabled={!connected} style={{
+              flex:1,
+              background:danceRunning?"#ef4444":connected?"linear-gradient(135deg,#22c55e,#16a34a)":"#111927",
+              border:`1px solid ${danceRunning?"#ef4444":connected?"#22c55e":"#2a3f55"}`,
+              color:connected ? "#080c14" : "#2a3f55",
+              borderRadius:8,padding:"9px 12px",fontSize:11,
+              cursor:connected?"pointer":"not-allowed",fontFamily:"Outfit",fontWeight:700,
+              letterSpacing:0.8,transition:"all 0.2s"
+            }}>
+              {danceRunning ? "STOP DANCE" : "DANCE 30S"}
+            </button>
+          </div>
+          <div style={{fontSize:9,color:"#3b5068",lineHeight:1.6,marginTop:9}}>
+            30s MP3 · speed 2.0-2.25 · CH2 + gripper hits
+          </div>
+          {danceAudioSrc && (
+            <audio
+              key={danceAudioSrc}
+              src={danceAudioSrc}
+              autoPlay
+              controls
+              preload="auto"
+              width="100%"
+              style={{width:"100%",marginTop:10,accentColor:"#22c55e"}}
+            />
           )}
         </div>
 
