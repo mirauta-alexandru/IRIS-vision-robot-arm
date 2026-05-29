@@ -6,6 +6,10 @@
 
 **IRIS** stands for **Intelligent Robotic Interactive System**: an open-source, AI-powered 6-DOF robotic arm built to see objects on a table, understand natural language commands, plan manipulation steps, and move a physical arm through computer vision, calibration, inverse kinematics, and ESP32/PCA9685 servo control.
 
+![IRIS vision robot arm demo](assets/iris-vision-demo-award.gif)
+
+**Award:** IRIS won **First Prize** at the 2026 student competition **"Theoretical Electrotechnics and Applications in Electrical Systems"**, organized by the Faculty of Electrical Engineering, Power Engineering and Applied Informatics, Department of Electrotechnics. The awarded paper was **"AI Vision Robotic Arm"**, by **Mirăuță Alexandru** and **Cardas Codrin**.
+
 IRIS is not designed as a robot that only replays pre-programmed motions. The goal is to let an AI system receive a new command, inspect the scene in real time, decide what needs to happen, and control the arm through structured functions.
 
 [Project presentation](docs/prezentare-iris.pdf)

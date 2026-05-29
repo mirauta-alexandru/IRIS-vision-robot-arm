@@ -6,6 +6,10 @@
 
 **IRIS** vine de la **Intelligent Robotic Interactive System**: un braț robotic cu inteligență artificială și 6 grade de libertate, construit pentru a vedea obiecte pe masă, a înțelege comenzi naturale și a le executa fizic printr-o combinație de viziune, calibrare, cinematică inversă și control pe ESP32.
 
+![Demo IRIS braț robotic cu viziune](assets/iris-vision-demo-award.gif)
+
+**Premiu:** IRIS a obținut **Premiul I** la concursul studențesc **„Electrotehnică teoretică și aplicații în sisteme electrice”**, ediția 2026, organizat de Facultatea de Inginerie Electrică, Energetică și Informatică Aplicată, Departamentul de Electrotehnică. Lucrarea premiată a fost **„Braț robotic cu vision A.I.”**, realizată de **Mirăuță Alexandru** și **Cardas Codrin**.
+
 Proiectul nu este gândit ca un robot cu mișcări preprogramate rigid. Ideea lui IRIS este să primească o comandă nouă, să analizeze scena în timp real, să planifice pașii și să controleze brațul prin funcții structurate.
 
 [Prezentarea proiectului](docs/prezentare-iris.pdf)
