@@ -3645,20 +3645,18 @@ The points are in [y, x] format normalized to 0-1000."""
         if parsed.path == "/robotics/cancel":
             robotics_cancel_flag[0] = True
             print("  🛑 Robotics cancel requested!")
-            # Send arm home immediately
-            send_raw(0, 0)  # open gripper
-            with move_lock:
-                current_angles[0] = 0
-                target_angles[0] = 0
-            time.sleep(0.5)
-            target_m = [0.2, 0.0, 0.25]
-            servo_angles, error, actual_mm = solve_ik(target_m)
-            for ch, angle in servo_angles.items():
-                set_target(ch, angle)
-            last_wrist_roll[0] = 55  # reset wrist roll
-            # Wait a bit so the running task thread sees the cancel flag
-            time.sleep(1.0)
-            self.respond_json({"ok": True, "cancelled": True})
+            # Stop means disable PWM outputs; never guess a "home" pose on cancel.
+            stop_result = pi_client.stop() if pi_client is not None else {
+                "status": "unavailable",
+                "hardware_moved": False,
+            }
+            time.sleep(0.1)
+            self.respond_json({
+                "ok": True,
+                "cancelled": True,
+                "controller_stop": stop_result,
+                "note": "PWM outputs disabled when Pi is connected; use the physical servo-power switch for emergency power removal.",
+            })
             return
 
         # ─── ROBOTICS STATUS ───
@@ -3688,11 +3686,9 @@ The points are in [y, x] format normalized to 0-1000."""
                 if robotics_status[0] != "idle":
                     print(f"  ⚠ Previous task still running, cancelling...")
                     robotics_cancel_flag[0] = True
-                    # Send arm home
-                    send_raw(0, 0)
-                    with move_lock:
-                        current_angles[0] = 0
-                        target_angles[0] = 0
+                    # Disable PWM outputs instead of issuing an uncalibrated "home" pose.
+                    if pi_client is not None:
+                        pi_client.stop()
                     # Wait for old task to see cancel flag and stop
                     for _ in range(20):  # max 2 seconds
                         time.sleep(0.1)
