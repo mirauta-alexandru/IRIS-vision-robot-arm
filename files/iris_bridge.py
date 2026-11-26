@@ -3325,9 +3325,16 @@ class BridgeHandler(BaseHTTPRequestHandler):
         body = self.rfile.read(length).decode()
 
         if parsed.path in ("/calibration/jog", "/calibration/stop"):
-            local_clients = {"127.0.0.1", "::1", os.environ.get("IRIS_PC_IP", "192.168.1.213")}
-            if self.client_address[0] not in local_clients:
-                self.respond_json({"error": "Calibration controls are restricted to the Dell PC."}, 403)
+            pc_ip = os.environ.get("IRIS_PC_IP", "192.168.1.213")
+            local_clients = {"127.0.0.1", "::1", pc_ip}
+            allowed_origins = {
+                f"http://localhost:{HTTP_PORT}",
+                f"http://127.0.0.1:{HTTP_PORT}",
+                f"http://{pc_ip}:{HTTP_PORT}",
+            }
+            request_origin = self.headers.get("Origin", "")
+            if self.client_address[0] not in local_clients or request_origin not in allowed_origins:
+                self.respond_json({"error": "Calibration controls accept requests only from the Dell-local IRIS page."}, 403)
                 return
             if IRIS_TRANSPORT != "pi" or pi_client is None:
                 self.respond_json({"error": "Raspberry Pi controller is not connected."}, 503)
