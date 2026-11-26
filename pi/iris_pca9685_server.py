@@ -75,6 +75,8 @@ def get_channel_config(channel: int) -> dict[str, Any]:
         raise ValueError(f"Channel {channel} has no calibration entry.")
     if item.get("enabled") is not True:
         raise PermissionError(f"Channel {channel} is disabled pending calibration.")
+    if item.get("calibration_verified") is not True:
+        raise PermissionError(f"Channel {channel} calibration has not been explicitly verified.")
     pulse_min = item.get("pulse_min_us")
     pulse_max = item.get("pulse_max_us")
     if not isinstance(pulse_min, (int, float)) or not isinstance(pulse_max, (int, float)):
@@ -195,6 +197,8 @@ def all_arm_channels_calibrated() -> bool:
     for channel in range(7):
         item = CHANNELS.get(str(channel))
         if not isinstance(item, dict) or item.get("enabled") is not True:
+            return False
+        if item.get("calibration_verified") is not True:
             return False
         pulse_min = item.get("pulse_min_us")
         pulse_max = item.get("pulse_max_us")
