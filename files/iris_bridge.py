@@ -18,6 +18,7 @@ import subprocess
 import sys
 import cv2
 import base64
+from iris_pi_client import PiServoClient
 
 # ─── CONFIG ───
 SERIAL_PORT = "/dev/tty.usbserial-0001"
@@ -26,6 +27,13 @@ HTTP_PORT = 8765
 STEP_SIZE = 1.8
 STEP_DELAY = 0.010
 CAMERA_ID = 0
+
+# Dell-to-Raspberry-Pi actuator transport. Pi is the default; legacy serial
+# is available only when explicitly selected with IRIS_TRANSPORT=legacy_serial.
+IRIS_TRANSPORT = os.environ.get("IRIS_TRANSPORT", "pi").strip().lower()
+PI_HOST = os.environ.get("IRIS_PI_HOST", "192.168.1.196")
+PI_PORT = int(os.environ.get("IRIS_PI_PORT", "8766"))
+IRIS_TOKEN = os.environ.get("IRIS_TOKEN", "")
 
 # Gemini config
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
@@ -2595,8 +2603,10 @@ def get_camera_frame():
     with camera_lock:
         return camera_frame.copy() if camera_frame is not None else None
 
-# ─── Serial ───
+# ─── Hardware transport ───
 ser = None
+pi_client = None
+pi_reported_errors = set()
 current_angles = {}
 target_angles = {}
 move_lock = threading.Lock()
@@ -2607,17 +2617,54 @@ def connect_serial():
     try:
         ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
         time.sleep(2)
-        print(f"✓ Serial connected: {SERIAL_PORT} @ {BAUD_RATE}")
+        print(f"✓ Legacy serial connected: {SERIAL_PORT} @ {BAUD_RATE}")
         return True
     except Exception as e:
-        print(f"✗ Serial error: {e}")
+        print(f"✗ Legacy serial error: {e}")
+        return False
+
+def connect_pi():
+    global pi_client
+    try:
+        pi_client = PiServoClient(PI_HOST, PI_PORT, IRIS_TOKEN)
+        status = pi_client.ping()
+        if status.get("status") != "ok":
+            raise ConnectionError(status.get("error", str(status)))
+        print(
+            f"✓ Raspberry Pi controller connected: {PI_HOST}:{PI_PORT} "
+            f"(hardware gate={'ON' if status.get('hardware_enabled') else 'OFF / dry-run'})"
+        )
+        return True
+    except Exception as e:
+        if pi_client is not None:
+            pi_client.close()
+        pi_client = None
+        print(f"✗ Raspberry Pi controller unavailable: {e}")
         return False
 
 def send_raw(ch, angle):
-    if ser and ser.is_open:
-        cmd = f"ch {ch} {angle}\n"
+    if IRIS_TRANSPORT == "pi":
+        if pi_client is None:
+            return False
+        # Existing V7 code uses legacy gripper values: 0=open, 70=closed.
+        # Convert at the transport boundary: 0=closed, 90=open.
+        pi_angle = 90.0 - (float(angle) / 70.0) * 90.0 if int(ch) == 0 else float(angle)
+        result = pi_client.set_angle(int(ch), pi_angle)
+        status = result.get("status")
+        if status in ("moved", "dry_run"):
+            pi_reported_errors.discard(int(ch))
+            return status == "moved"
+        if int(ch) not in pi_reported_errors:
+            print(f"⚠ Pi rejected channel {ch}: {result.get('error', status)}")
+            pi_reported_errors.add(int(ch))
+        return False
+
+    if IRIS_TRANSPORT == "legacy_serial" and ser and ser.is_open:
+        cmd = f"ch {ch} {angle}\\n"
         ser.write(cmd.encode())
         time.sleep(0.005)
+        return True
+    return False
 
 
 def compensate_base_y_servo(angle):
@@ -3050,9 +3097,13 @@ class BridgeHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
 
         if parsed.path == "/ping":
+            pi_status = pi_client.ping() if pi_client is not None else None
             self.respond_json({
                 "status": "ok",
+                "transport": IRIS_TRANSPORT,
                 "serial": ser is not None and ser.is_open,
+                "controller_connected": bool(pi_status and pi_status.get("status") == "ok") if IRIS_TRANSPORT == "pi" else bool(ser and ser.is_open),
+                "controller": pi_status,
                 "ikpy": True,
                 "vision": vision_info.get("loaded", False)
             })
@@ -3110,14 +3161,15 @@ class BridgeHandler(BaseHTTPRequestHandler):
         # ─── Gripper INSTANT (bypass smooth mover) ───
         if parsed.path == "/gripper":
             params = parse_qs(parsed.query)
-            angle = int(params.get("angle", [0])[0])
-            angle = max(0, min(70, angle))  # clamp 0-70
-            send_raw(0, angle)
+            # Public convention: 0° = CLOSED, 90° = OPEN.
+            angle = max(0, min(90, int(params.get("angle", [0])[0])))
+            legacy_angle = int(round(70.0 * (1.0 - angle / 90.0)))
+            send_raw(0, legacy_angle)
             with move_lock:
-                current_angles[0] = angle
-                target_angles[0] = angle
+                current_angles[0] = legacy_angle
+                target_angles[0] = legacy_angle
             print(f"  Gripper INSTANT → {angle}°")
-            self.respond_json({"ok": True, "ch": 0, "angle": angle, "instant": True})
+            self.respond_json({"ok": True, "ch": 0, "angle": angle, "convention": "0=closed,90=open", "instant": True})
             return
 
         # ─── Camera control ───
@@ -3942,13 +3994,19 @@ The points are in [y, x] format normalized to 0-1000."""
 
 if __name__ == "__main__":
     print("╔══════════════════════════════════════════════════╗")
-    print("║  IRIS Bridge v6.0 — Agent + Voice + Vision        ║")
-    print("║  Browser → Agent/Gemini → IK → Serial → ESP32     ║")
+    print("║  IRIS Bridge v7.0 — Agent + Voice + Vision        ║")
+    print("║  Dell Vision/IK → Network → Pi PCA9685            ║")
     print("╚══════════════════════════════════════════════════╝")
     print()
 
-    if not connect_serial():
-        print("⚠ Running without serial (test mode)\n")
+    if IRIS_TRANSPORT == "pi":
+        if not connect_pi():
+            print("⚠ Pi controller not connected. No actuator movement is available.\\n")
+    elif IRIS_TRANSPORT == "legacy_serial":
+        if not connect_serial():
+            print("⚠ Running without legacy serial (test mode)\\n")
+    else:
+        raise RuntimeError("IRIS_TRANSPORT must be 'pi' or 'legacy_serial'.")
 
     moving = True
     t = threading.Thread(target=smooth_move_worker, daemon=True)
@@ -3969,7 +4027,7 @@ if __name__ == "__main__":
     print(f"  POST /dance/stop    — stop music dance routine")
     print(f"  POST /gamepad/start — start PS4 manual controller")
     print(f"  POST /gamepad/stop  — stop PS4 manual controller")
-    print(f"  GET  /gripper       — instant gripper (0=open, 70=closed)")
+    print(f"  GET  /gripper       — instant gripper (0=closed, 90=open)")
     print("Press Ctrl+C to stop\n")
 
     class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
@@ -3985,5 +4043,7 @@ if __name__ == "__main__":
         stop_camera()
         if ser and ser.is_open:
             ser.close()
+        if pi_client is not None:
+            pi_client.close()
         server.server_close()
         print("✓ Done")
