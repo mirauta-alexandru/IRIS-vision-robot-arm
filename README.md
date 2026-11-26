@@ -129,6 +129,14 @@ Open the live interface:
 http://localhost:8765/live
 ```
 
+The Dell-local single-servo calibration panel is available at:
+
+```text
+http://localhost:8765/calibration
+```
+
+It is restricted to the Dell PC and only enables its jog button when the Pi reports both hardware and calibration mode enabled. The temporary jog range is ±25 µs; remove the servo horn/linkage and unload the joint before using it.
+
 Manual gamepad control (locked by default until calibration review):
 
 ```bash
@@ -190,6 +198,7 @@ Technical notes: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 ```text
 files/iris_bridge.py       Dell bridge: AI tools, IK, camera, HTTP, Pi network transport
 files/iris_pi_client.py    Authenticated Dell-to-Pi TCP client
+files/iris_calibration.html Dell-local single-servo calibration panel
 pi/iris_pca9685_server.py  Raspberry Pi PCA9685 controller
 pi/servo_calibration.json Per-channel pulse limits; disabled by default
 files/iris_live.html       Real-time voice and control interface
