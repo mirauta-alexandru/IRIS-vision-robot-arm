@@ -22,7 +22,8 @@ This release focuses on the current IRIS V7 control stack:
 - a 30-second local MP3 dance routine with beat-based speed phases. Place your local audio at `files/media/iris_dance.mp3`;
 - safer shoulder limits, with CH4 constrained to 30-160 degrees and CH5 mirrored from CH4;
 - a fresh PS4 manual controller script for direct servo testing through the bridge;
-- improved visualizer controls for PS4 mode, hello wave, and music dance routines.
+- improved visualizer controls for PS4 mode, hello wave, and music dance routines;
+- authenticated Dell-to-Pi PCA9685 control with dry-run and per-channel calibration gates.
 
 ## Build Overview
 
@@ -101,9 +102,10 @@ Calibrate the robot workspace:
 python files/iris_vision_v3.py
 ```
 
-Start the Pi controller on the Raspberry Pi (with `adafruit-circuitpython-pca9685` and `adafruit-blinka` installed):
+On the Raspberry Pi, install the controller dependencies from `pi/requirements.txt`, then start the controller:
 
 ```bash
+pip install -r pi/requirements.txt
 export IRIS_TOKEN="same-long-random-secret-on-both-devices"
 export IRIS_ALLOWED_PC_IP="192.168.1.213"
 export IRIS_ENABLE_HARDWARE=0
