@@ -67,7 +67,7 @@ Coordinated angle motion is allowed only when all seven channels have valid cali
 
 A separate `CALIBRATION_JOG` command can move exactly one channel inside its temporary `jog_min_us` / `jog_max_us` window. It requires BOTH `IRIS_ENABLE_HARDWARE=1` and `IRIS_CALIBRATION_MODE=1`. The temporary jog window is only ±25 µs around 1500 µs (CH1 wrist rotation: ±25 µs around the user's 1550 µs reference). These are deliberately narrow commissioning limits, not final calibrated travel limits. Keep the servo horn/linkage disconnected and the arm unloaded during this test. Never jog a servo that is buzzing, stalled, hot, or mechanically constrained.
 
-CH1 contains a provisional 1500–1600 µs range corresponding to 85–95° around the user's 1550 µs / 90° reference, but it remains disabled. It must be mechanically checked before enabling.
+The user's earlier CH1 test used a provisional 1500–1600 µs window around a 1550 µs / 90° reference. That range is NOT installed as a final travel limit. The current calibration-only jog window is narrower (1525–1575 µs), and CH1 remains disabled until its final mechanical limits are measured.
 
 Do not copy old V7 offsets or broad degree limits into the Pi calibration file. Calibrate each joint individually, with the linkage unloaded where possible. Stop immediately if a servo buzzes, stalls, heats, or needs manual force.
 
