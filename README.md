@@ -30,14 +30,14 @@ To build IRIS from scratch, follow the project in this order:
 
 1. Print and assemble the robotic arm.
 2. Install the electronics: Raspberry Pi 4, PCA9685, servos, external power supply, and common ground.
-
-The Dell PC runs vision and IK; the Raspberry Pi only handles servo I/O. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the current network design.
 3. Connect a fixed overhead camera.
 4. Install the Python software.
 5. Calibrate the camera intrinsics.
 6. Calibrate the robot workspace with the ChArUco board.
 7. Start the bridge and open the live interface.
 8. Test manual movement before running autonomous AI tasks.
+
+The Dell PC runs vision and IK; the Raspberry Pi only handles servo I/O. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the current network design.
 
 The 3D-printable parts and hardware files belong in the [hardware](hardware) folder. The current repository already includes hardware notes and the custom PSU enclosure source; the full printable arm files will be added there later.
 
