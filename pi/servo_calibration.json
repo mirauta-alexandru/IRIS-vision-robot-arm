@@ -1,0 +1,89 @@
+{
+  "frequency_hz": 50,
+  "channels": {
+    "0": {
+      "name": "gripper_mg90s",
+      "enabled": false,
+      "angle_min": null,
+      "angle_max": null,
+      "pulse_min_us": null,
+      "pulse_max_us": null,
+      "notes": "User convention: 0 degrees CLOSED, 90 degrees OPEN. Pulse endpoints must be calibrated before enabling. Final angle and pulse limits must be measured for this exact joint before enabling.",
+      "jog_min_us": 1475,
+      "jog_max_us": 1525,
+      "calibration_verified": false
+    },
+    "1": {
+      "name": "wrist_rotation_mg90s",
+      "enabled": false,
+      "angle_min": null,
+      "angle_max": null,
+      "pulse_min_us": null,
+      "pulse_max_us": null,
+      "notes": "Provisional only: 90 degrees is the user's 1550 us reference. Keep disabled until mechanically checked. Final angle and pulse limits must be measured for this exact joint before enabling.",
+      "jog_min_us": 1525,
+      "jog_max_us": 1575,
+      "calibration_verified": false
+    },
+    "2": {
+      "name": "wrist_pitch_mg90s",
+      "enabled": false,
+      "angle_min": null,
+      "angle_max": null,
+      "pulse_min_us": null,
+      "pulse_max_us": null,
+      "notes": "Not calibrated. Final angle and pulse limits must be measured for this exact joint before enabling.",
+      "jog_min_us": 1475,
+      "jog_max_us": 1525,
+      "calibration_verified": false
+    },
+    "3": {
+      "name": "elbow_mg996r",
+      "enabled": false,
+      "angle_min": null,
+      "angle_max": null,
+      "pulse_min_us": null,
+      "pulse_max_us": null,
+      "notes": "Not calibrated. Final angle and pulse limits must be measured for this exact joint before enabling.",
+      "jog_min_us": 1475,
+      "jog_max_us": 1525,
+      "calibration_verified": false
+    },
+    "4": {
+      "name": "shoulder_a_mg996r",
+      "enabled": false,
+      "angle_min": null,
+      "angle_max": null,
+      "pulse_min_us": null,
+      "pulse_max_us": null,
+      "notes": "Not calibrated. Final angle and pulse limits must be measured for this exact joint before enabling.",
+      "jog_min_us": 1475,
+      "jog_max_us": 1525,
+      "calibration_verified": false
+    },
+    "5": {
+      "name": "shoulder_b_mg996r",
+      "enabled": false,
+      "angle_min": null,
+      "angle_max": null,
+      "pulse_min_us": null,
+      "pulse_max_us": null,
+      "notes": "Not calibrated. Final angle and pulse limits must be measured for this exact joint before enabling.",
+      "jog_min_us": 1475,
+      "jog_max_us": 1525,
+      "calibration_verified": false
+    },
+    "6": {
+      "name": "base_mg996r",
+      "enabled": false,
+      "angle_min": null,
+      "angle_max": null,
+      "pulse_min_us": null,
+      "pulse_max_us": null,
+      "notes": "Not calibrated. Final angle and pulse limits must be measured for this exact joint before enabling.",
+      "jog_min_us": 1475,
+      "jog_max_us": 1525,
+      "calibration_verified": false
+    }
+  }
+}

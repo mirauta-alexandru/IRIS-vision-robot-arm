@@ -205,6 +205,13 @@ def main():
     parser.add_argument("--r1-button", type=int, default=None, help="override R1 pygame button id")
     args = parser.parse_args()
 
+    if os.environ.get("IRIS_ALLOW_PRESET_MOTIONS", "0") != "1":
+        print(
+            "PS4 motion is disabled. Complete servo calibration and motion review, "
+            "then explicitly set IRIS_ALLOW_PRESET_MOTIONS=1."
+        )
+        return 2
+
     try:
         import pygame as pygame_module
     except ModuleNotFoundError:

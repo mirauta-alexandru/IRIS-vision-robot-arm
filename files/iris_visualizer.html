@@ -49,7 +49,7 @@ const SERVO_LIST = [
   { key:"elbow",       ch:3, offset:25,  min:20,  max:180, dir:-1, label:"Elbow",          color:"#10b981" },
   { key:"wrist_pitch", ch:2, offset:100, min:0,   max:170, dir:-1, label:"Wrist Pitch",    color:"#f59e0b" },
   { key:"wrist_roll",  ch:1, offset:55,  min:0,   max:180, dir:1,  label:"Wrist Roll",     color:"#8b5cf6" },
-  { key:"gripper",     ch:0, offset:0,   min:0,   max:70,  dir:1,  label:"Gripper",        color:"#ef4444", isGripper:true },
+  { key:"gripper",     ch:0, offset:90,  min:0,   max:90,  dir:1,  label:"Gripper",        color:"#ef4444", isGripper:true },
 ];
 
 const HOME = {};
@@ -234,7 +234,7 @@ function App() {
     const check = () => {
       fetch(BRIDGE_URL + "/ping").then(r => r.json())
         .then(d => {
-          setConnected(d.serial === true);
+          setConnected(d.controller_connected === true || d.serial === true);
           if (d.vision) {
             fetch(BRIDGE_URL + "/vision/status").then(r => r.json())
               .then(v => setVisionCalib(v))
@@ -248,7 +248,7 @@ function App() {
     return () => clearInterval(iv);
   }, []);
 
-  // Send single servo to ESP32
+  // Send single servo to Pi PCA9685
   const sendServo = (ch, angle) => {
     if (!liveMode || !connected) return;
     fetch(`${BRIDGE_URL}/servo?ch=${ch}&angle=${Math.round(angle)}`).catch(() => {});
@@ -260,16 +260,16 @@ function App() {
     fetch(`${BRIDGE_URL}/gripper?angle=${Math.round(angle)}`).catch(() => {});
   };
 
-  // Toggle gripper: OPEN (0°) ↔ CLOSED (70°)
+  // Toggle gripper: OPEN (90°) ↔ CLOSED (0°)
   const toggleGripper = () => {
     const newOpen = !gripperOpen;
-    const angle = newOpen ? 0 : 70;
+    const angle = newOpen ? 90 : 0;
     setGripperOpen(newOpen);
     setServoDeg(p => ({...p, gripper: angle}));
     if (connected) sendGripperInstant(angle);
   };
 
-  // Send all servos to ESP32 (excludes gripper — gripper uses instant endpoint)
+  // Send all servos to Pi PCA9685 (excludes gripper — gripper uses instant endpoint)
   const sendAllServos = (sd) => {
     if (!connected) return;
     const payload = {};
@@ -288,7 +288,7 @@ function App() {
   const handleServo = (key, val) => {
     const v = Number(val);
     setServoDeg(p => ({...p, [key]:v}));
-    // Send to ESP32 in live mode (throttled)
+    // Send to Pi in live mode (throttled)
     if (liveMode && connected) {
       const s = SERVO_LIST.find(x => x.key === key);
       if (s) {
@@ -306,7 +306,7 @@ function App() {
     setServoDeg({...HOME});
     setGripperOpen(true);
     if (liveMode && connected) sendAllServos({...HOME});
-    if (connected) sendGripperInstant(0);
+    if (connected) sendGripperInstant(90);
   };
 
   const pushToRobot = () => sendAllServos(servoDeg);
@@ -1570,12 +1570,12 @@ function App() {
       {/* ─── CONTROLS PANEL ─── */}
       <div style={{flex:"0 0 310px",display:"flex",flexDirection:"column",gap:12,maxHeight:"100vh",overflowY:"auto"}}>
         
-        {/* ESP32 Connection */}
+        {/* Raspberry Pi Connection */}
         <div style={{background:"#0d1117",borderRadius:16,border:`1px solid ${connected?"#10b981":"#1b2838"}`,padding:14,transition:"border-color 0.3s"}}>
           <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
             <div style={{width:10,height:10,borderRadius:"50%",background:connected?"#10b981":"#ef4444",boxShadow:connected?"0 0 8px #10b981":"0 0 8px #ef4444"}}/>
             <span style={{fontFamily:"Outfit",fontSize:13,fontWeight:700,color:connected?"#10b981":"#ef4444",letterSpacing:1}}>
-              {connected ? "ESP32 CONNECTED" : "ESP32 OFFLINE"}
+              {connected ? "PI CONNECTED" : "PI OFFLINE"}
             </span>
           </div>
           {connected && (
@@ -1711,7 +1711,7 @@ function App() {
           <div style={{display:"flex",gap:8,marginBottom:14,alignItems:"center"}}>
             <div style={{width:8,height:8,borderRadius:"50%",background:connected?"#10b981":"#ef4444",boxShadow:connected?"0 0 6px #10b981":"0 0 6px #ef4444",flexShrink:0}}/>
             <span style={{fontSize:10,color:connected?"#10b981":"#ef4444",flexShrink:0}}>
-              {connected?"SERIAL OK":"OFFLINE"}
+              {connected?"PI LINK OK":"OFFLINE"}
             </span>
             <div style={{flex:1}}/>
             <button onClick={()=>setLiveMode(l=>!l)} style={{
@@ -1775,7 +1775,7 @@ function App() {
                   {gripperOpen ? "✋ OPEN" : "✊ CLOSED"}
                 </button>
                 <span style={{color:"#c8d6e5",fontWeight:600,fontSize:13,minWidth:30,textAlign:"right"}}>
-                  {gripperOpen ? "0°" : "70°"}
+                  {gripperOpen ? "90°" : "0°"}
                 </span>
               </div>
             </div>
@@ -1972,9 +1972,9 @@ function App() {
           )}
         </div>
 
-        {/* ESP32 Output */}
+        {/* PCA9685 Output */}
         <div style={{background:"#0d1117",borderRadius:16,border:"1px solid #1b2838",padding:18}}>
-          <span style={{fontFamily:"Outfit",fontSize:14,fontWeight:700,color:"#10b981",letterSpacing:1,display:"block",marginBottom:10}}>ESP32 OUTPUT</span>
+          <span style={{fontFamily:"Outfit",fontSize:14,fontWeight:700,color:"#10b981",letterSpacing:1,display:"block",marginBottom:10}}>PCA9685 OUTPUT</span>
           <div style={{background:"#111927",borderRadius:8,padding:10,fontFamily:"IBM Plex Mono",fontSize:11,color:"#3b5068",lineHeight:1.8}}>
             <div><span style={{color:"#10b981"}}>pca.</span>setPWM(<span style={{color:"#fbbf24"}}>6</span>, <span style={{color:"#c8d6e5"}}>{servoDeg.base}</span>); <span style={{color:"#1b2838"}}>// base</span></div>
             <div><span style={{color:"#10b981"}}>pca.</span>setPWM(<span style={{color:"#fbbf24"}}>4</span>, <span style={{color:"#c8d6e5"}}>{servoDeg.shoulder}</span>); <span style={{color:"#1b2838"}}>// shoulder A</span></div>

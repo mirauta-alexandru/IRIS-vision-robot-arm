@@ -105,7 +105,7 @@ function App(){
   
   // Bridge check
   useEffect(()=>{
-    const check=()=>{fetch(BRIDGE+"/ping").then(r=>r.json()).then(d=>{setConnected(d.serial===true);if(!cameraOn&&d.serial){fetch(BRIDGE+"/camera/start").then(r=>r.json()).then(c=>{if(c.ok)setCameraOn(true);}).catch(()=>{});}}).catch(()=>setConnected(false));};
+    const check=()=>{fetch(BRIDGE+"/ping").then(r=>r.json()).then(d=>{setConnected(d.controller_connected===true||d.serial===true);if(!cameraOn&&(d.controller_connected===true||d.serial===true)){fetch(BRIDGE+"/camera/start").then(r=>r.json()).then(c=>{if(c.ok)setCameraOn(true);}).catch(()=>{});}}).catch(()=>setConnected(false));};
     check();const iv=setInterval(check,5000);return()=>clearInterval(iv);
   },[cameraOn]);
   
@@ -336,7 +336,7 @@ Read it and tell the user what happened.
 - Use get_robot_status to check what Robotics is doing when the user asks`}]},
         tools:[{functionDeclarations:[
           {name:"execute_robot_task",description:"Send a task to Gemini Robotics ER 1.6 for autonomous execution. NON-BLOCKING - returns immediately. Result comes later as [ROBOTICS RESULT] message.",parameters:{type:"OBJECT",properties:{task:{type:"STRING",description:"Natural language task, e.g. 'pick up the red cube and place it on the right side', 'grab the pen'"}},required:["task"]}},
-          {name:"cancel_robot_task",description:"STOP the current robot task immediately. Arm goes home, gripper opens. Use when the user changes their mind or says stop/oprește/nu mai vreau.",parameters:{type:"OBJECT",properties:{}}},
+          {name:"cancel_robot_task",description:"Latch STOP immediately: preserve the last PCA9685 PWM setpoints and block further movement commands until the Pi controller is deliberately restarted. This is not a safety-rated emergency stop; use the physical servo-power switch for emergency power removal.",parameters:{type:"OBJECT",properties:{}}},
           {name:"get_robot_status",description:"Check what Robotics ER is currently doing. Returns busy/idle status and last action. Use to tell the user what's happening.",parameters:{type:"OBJECT",properties:{}}},
           {name:"look_at_scene",description:"Take a camera snapshot and ask Robotics ER to describe what it sees. Use when user asks what's visible or to check results.",parameters:{type:"OBJECT",properties:{question:{type:"STRING",description:"What to look for, e.g. 'ce obiecte sunt pe masă?', 'am prins obiectul?'"}},required:["question"]}},
           {name:"wave_hello",description:"DIRECT Gemini Live greeting gesture. Call this when the user says salut/bună/hello/hei IRIS or asks IRIS to greet the audience. Do not route greetings through Robotics.",parameters:{type:"OBJECT",properties:{}}},
@@ -427,7 +427,7 @@ Read it and tell the user what happened.
             setIrisState('acting');
             setStatusText('🏠 Merg acasă...');
             try{
-              await fetch(BRIDGE+"/gripper?angle=0");
+              await fetch(BRIDGE+"/gripper?angle=90");
               await fetch(BRIDGE+"/ik",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({x:200,y:0,z:250,send:true})});
               res={success:true};
             }catch(e){res={success:false,error:e.message};}

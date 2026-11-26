@@ -4,7 +4,7 @@
 
 ![IRIS logo](assets/iris-logo-banner.png)
 
-**IRIS** stands for **Intelligent Robotic Interactive System**: an open-source, AI-powered 6-DOF robotic arm built to see objects on a table, understand natural language commands, plan manipulation steps, and move a physical arm through computer vision, calibration, inverse kinematics, and ESP32/PCA9685 servo control.
+**IRIS** stands for **Intelligent Robotic Interactive System**: an open-source, AI-powered 6-DOF robotic arm built to see objects on a table, understand natural language commands, plan manipulation steps, and move a physical arm through computer vision, calibration, inverse kinematics, and Raspberry Pi/PCA9685 servo control.
 
 ![IRIS vision robot arm demo](assets/iris-vision-demo-award.gif)
 
@@ -22,20 +22,25 @@ This release focuses on the current IRIS V7 control stack:
 - a 30-second local MP3 dance routine with beat-based speed phases. Place your local audio at `files/media/iris_dance.mp3`;
 - safer shoulder limits, with CH4 constrained to 30-160 degrees and CH5 mirrored from CH4;
 - a fresh PS4 manual controller script for direct servo testing through the bridge;
-- improved visualizer controls for PS4 mode, hello wave, and music dance routines.
+- improved visualizer controls for PS4 mode, hello wave, and music dance routines;
+- authenticated Dell-to-Pi PCA9685 control with dry-run and per-channel calibration gates.
+- batched, all-or-nothing multi-joint motion frames with Pi-side validation;
+- mocked Pi-controller safety tests and a GitHub Actions syntax/test workflow.
 
 ## Build Overview
 
 To build IRIS from scratch, follow the project in this order:
 
 1. Print and assemble the robotic arm.
-2. Install the electronics: ESP32, PCA9685, servos, power supply, and common ground.
+2. Install the electronics: Raspberry Pi 4, PCA9685, servos, external power supply, and common ground.
 3. Connect a fixed overhead camera.
 4. Install the Python software.
 5. Calibrate the camera intrinsics.
 6. Calibrate the robot workspace with the ChArUco board.
 7. Start the bridge and open the live interface.
 8. Test manual movement before running autonomous AI tasks.
+
+The Dell PC runs vision and IK; the Raspberry Pi only handles servo I/O. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the current network design.
 
 The 3D-printable parts and hardware files belong in the [hardware](hardware) folder. The current repository already includes hardware notes and the custom PSU enclosure source; the full printable arm files will be added there later.
 
@@ -47,7 +52,7 @@ Assembly reference video:
 Main parts:
 
 - 3D-printed 6-DOF robotic arm parts;
-- ESP32 WROOM-32D;
+- Raspberry Pi 4 Model B as the low-level controller;
 - PCA9685 16-channel PWM servo driver;
 - hobby servos for the arm joints and gripper;
 - high-current 5V power supply for the servos;
@@ -57,17 +62,19 @@ Main parts:
 
 Important electrical notes:
 
-- Power the servos from the external 5V supply, not from the ESP32.
-- Connect ESP32 GND, PCA9685 GND, and power-supply GND together.
-- ESP32 talks to the PCA9685 through I2C: `GPIO21 -> SDA`, `GPIO22 -> SCL`.
+- Power the servos from the external regulated 5V supply through the PCA9685 V+ rail; do not power them from the Pi.
+- Connect Raspberry Pi GND, PCA9685 GND, and power-supply GND together.
+- Pi I2C wiring: physical pin 3 / GPIO2 -> SDA; physical pin 5 / GPIO3 -> SCL. Pi 3.3V on physical pin 1 -> PCA9685 VCC.
 - Test one servo at a time before moving the full arm.
 
 ## Run the Software
 
+The current two-computer setup is split: the Dell runs the camera, vision, AI, IK, and web bridge; the Raspberry Pi runs the PCA9685 controller. Both devices use the same `IRIS_TOKEN`. The Pi controller starts in dry-run mode, and every servo channel is disabled until its pulse limits are calibrated.
+
 Clone the repository:
 
 ```bash
-git clone https://github.com/mirauta-alexandru/IRIS-vision-robot-arm.git
+git clone https://github.com/Tech-Stuido/IRIS-vision-robot-arm.git
 cd IRIS-vision-robot-arm
 ```
 
@@ -97,11 +104,26 @@ Calibrate the robot workspace:
 python files/iris_vision_v3.py
 ```
 
-Start the bridge:
+On the Raspberry Pi, install the controller dependencies from `pi/requirements.txt`, then start the controller:
 
 ```bash
+pip install -r pi/requirements.txt
+export IRIS_TOKEN="same-long-random-secret-on-both-devices"
+export IRIS_ALLOWED_PC_IP="192.168.1.213"
+export IRIS_ENABLE_HARDWARE=0
+python pi/iris_pca9685_server.py
+```
+
+Start the vision/IK bridge on the Dell:
+
+```bash
+export IRIS_TOKEN="same-long-random-secret-on-both-devices"
+export IRIS_PI_HOST="192.168.1.196"
+export IRIS_TRANSPORT=pi
 python files/iris_bridge.py
 ```
+
+Keep `IRIS_ENABLE_HARDWARE=0` during setup and dry-run testing. Before any live movement, measure and enter BOTH the angle and pulse limits for every channel in `pi/servo_calibration.json`, then review the mechanics and motion paths. Coordinated movement additionally requires the separate `IRIS_ALLOW_COORDINATED_MOTION=1` gate. Preset motions and autonomous tasks remain disabled unless their separate Dell-side opt-in flags are deliberately enabled. The Pi's STOP command latches until the controller process is restarted.
 
 Open the live interface:
 
@@ -109,7 +131,15 @@ Open the live interface:
 http://localhost:8765/live
 ```
 
-Optional manual gamepad control:
+The Dell-local single-servo calibration panel is available at:
+
+```text
+http://localhost:8765/calibration
+```
+
+It is restricted to the Dell PC and only enables its jog button when the Pi reports both hardware and calibration mode enabled. The temporary jog range is ±25 µs; remove the servo horn/linkage and unload the joint before using it.
+
+Manual gamepad control (locked by default until calibration review):
 
 ```bash
 python files/iris_ps4_manual.py
@@ -117,7 +147,7 @@ python files/iris_ps4_manual.py
 
 ## What IRIS Is
 
-IRIS is an autonomous robotics prototype made from a 3D-printed 6-DOF arm, an overhead camera, an AI reasoning layer, ChArUco-based workspace calibration, an IKPy inverse-kinematics stack, and an ESP32/PCA9685 low-level control path.
+IRIS is an autonomous robotics prototype made from a 3D-printed 6-DOF arm, an overhead camera, an AI reasoning layer, ChArUco-based workspace calibration, an IKPy inverse-kinematics stack, and a Raspberry Pi/PCA9685 low-level control path.
 
 In practical terms, IRIS can:
 
@@ -126,7 +156,7 @@ In practical terms, IRIS can:
 - detect objects and convert image pixels into robot coordinates;
 - plan manipulation steps;
 - solve inverse kinematics with IKPy;
-- send joint targets to an ESP32;
+- send authenticated joint targets to the Raspberry Pi;
 - drive hobby servos through a PCA9685 PWM module;
 - be extended with new robot functions without rewriting the whole system.
 
@@ -146,7 +176,7 @@ Layer 2 - Cerebellum
   IKPy, URDF model, inverse kinematics, servo target generation
 
 Layer 1 - Spine
-  ESP32, serial protocol, PCA9685, stable PWM output for servos
+  Raspberry Pi TCP controller, I2C, PCA9685, stable PWM output for servos
 
 Layer 0 - Body
   3D-printed 6-DOF robotic arm, modified gripper, bearings, ATX power supply
@@ -162,13 +192,17 @@ Technical notes: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 4. ChArUco calibration converts that image position into robot workspace coordinates.
 5. The AI planner breaks the task into steps: approach, align, descend, grasp, lift.
 6. IKPy converts the XYZ target into joint angles.
-7. The ESP32 receives commands and drives the servos through the PCA9685 module.
+7. The Raspberry Pi receives authenticated commands and drives the servos through the PCA9685 module.
 8. The camera can be used again to verify the result and make small corrections.
 
 ## Repository Layout
 
 ```text
-files/iris_bridge.py       Main bridge: AI tools, IK, camera, HTTP, serial control
+files/iris_bridge.py       Dell bridge: AI tools, IK, camera, HTTP, Pi network transport
+files/iris_pi_client.py    Authenticated Dell-to-Pi TCP client
+files/iris_calibration.html Dell-local single-servo calibration panel
+pi/iris_pca9685_server.py  Raspberry Pi PCA9685 controller
+pi/servo_calibration.json Per-channel pulse limits; disabled by default
 files/iris_live.html       Real-time voice and control interface
 files/iris_visualizer.html Browser visualizer for camera, arm state, and commands
 files/iris_vision_v3.py    ChArUco workspace calibration
@@ -190,10 +224,10 @@ IRIS uses a 6-DOF 3D-printed robotic arm based on MakerWorld design #1134925 by 
 - 608 and 6203 bearings in selected joints for smoother movement;
 - custom enclosure for a recovered HP PS-6241-4HP ATX power supply;
 - 5V / 17A servo power rail from the recovered PSU;
-- ESP32 WROOM-32D as the low-level controller;
+- Raspberry Pi 4 Model B as the low-level controller;
 - PCA9685 16-channel PWM module at 50 Hz.
 
-Important electrical rule: **ESP32 GND, PCA9685 GND, and PSU GND must be common**.
+Important electrical rule: **Raspberry Pi GND, PCA9685 GND, and PSU GND must be common**.
 
 ## Software Requirements
 
@@ -280,7 +314,7 @@ IRIS is an active prototype. It works as a real AI-controlled robotic arm, but p
 - gripper geometry;
 - lighting, object shape, and background.
 
-The current goal is a clean, understandable open-source baseline before adding more complex correction or training layers.
+The current goal is a clean, understandable open-source baseline before adding more complex correction or training layers. The Pi controller is currently dry-run by default; servo channels must be calibrated individually before live movement is enabled.
 
 ## Roadmap
 

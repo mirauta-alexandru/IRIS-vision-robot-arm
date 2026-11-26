@@ -1,0 +1,23 @@
+[Unit]
+Description=IRIS Raspberry Pi PCA9685 Servo Controller
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=genos
+Group=genos
+SupplementaryGroups=i2c
+WorkingDirectory=/home/genos/IRIS-vision-robot-arm
+EnvironmentFile=/etc/iris/iris.env
+ExecStart=/home/genos/IRIS-vision-robot-arm/.venv/bin/python /home/genos/IRIS-vision-robot-arm/pi/iris_pca9685_server.py
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

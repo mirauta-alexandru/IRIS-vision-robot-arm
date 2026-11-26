@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-IRIS Serial Bridge v5.0 — ikpy IK + Vision Pick + Gemini Robotics ER
-Browser → HTTP → ikpy IK → Serial → ESP32
+IRIS Bridge v7.0 — Dell vision/IK + Raspberry Pi PCA9685 transport
+Browser → HTTP → ikpy IK → authenticated TCP → Pi/PCA9685
 Vision: ChArUco homography + Gemini Robotics ER 1.6 for object detection
 """
 
@@ -18,6 +18,7 @@ import subprocess
 import sys
 import cv2
 import base64
+from iris_pi_client import PiServoClient
 
 # ─── CONFIG ───
 SERIAL_PORT = "/dev/tty.usbserial-0001"
@@ -26,6 +27,15 @@ HTTP_PORT = 8765
 STEP_SIZE = 1.8
 STEP_DELAY = 0.010
 CAMERA_ID = 0
+
+# Dell-to-Raspberry-Pi actuator transport. Pi is the default; legacy serial
+# is available only when explicitly selected with IRIS_TRANSPORT=legacy_serial.
+IRIS_TRANSPORT = os.environ.get("IRIS_TRANSPORT", "pi").strip().lower()
+PI_HOST = os.environ.get("IRIS_PI_HOST", "192.168.1.196")
+PI_PORT = int(os.environ.get("IRIS_PI_PORT", "8766"))
+IRIS_TOKEN = os.environ.get("IRIS_TOKEN", "")
+ALLOW_PRESET_MOTIONS = os.environ.get("IRIS_ALLOW_PRESET_MOTIONS", "0") == "1"
+ALLOW_AUTONOMOUS_MOTION = os.environ.get("IRIS_ALLOW_AUTONOMOUS_MOTION", "0") == "1"
 
 # Gemini config
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
@@ -2595,8 +2605,10 @@ def get_camera_frame():
     with camera_lock:
         return camera_frame.copy() if camera_frame is not None else None
 
-# ─── Serial ───
+# ─── Hardware transport ───
 ser = None
+pi_client = None
+pi_reported_errors = set()
 current_angles = {}
 target_angles = {}
 move_lock = threading.Lock()
@@ -2607,17 +2619,54 @@ def connect_serial():
     try:
         ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
         time.sleep(2)
-        print(f"✓ Serial connected: {SERIAL_PORT} @ {BAUD_RATE}")
+        print(f"✓ Legacy serial connected: {SERIAL_PORT} @ {BAUD_RATE}")
         return True
     except Exception as e:
-        print(f"✗ Serial error: {e}")
+        print(f"✗ Legacy serial error: {e}")
+        return False
+
+def connect_pi():
+    global pi_client
+    try:
+        pi_client = PiServoClient(PI_HOST, PI_PORT, IRIS_TOKEN)
+        status = pi_client.ping()
+        if status.get("status") != "ok":
+            raise ConnectionError(status.get("error", str(status)))
+        print(
+            f"✓ Raspberry Pi controller connected: {PI_HOST}:{PI_PORT} "
+            f"(hardware gate={'ON' if status.get('hardware_enabled') else 'OFF / dry-run'})"
+        )
+        return True
+    except Exception as e:
+        if pi_client is not None:
+            pi_client.close()
+        pi_client = None
+        print(f"✗ Raspberry Pi controller unavailable: {e}")
         return False
 
 def send_raw(ch, angle):
-    if ser and ser.is_open:
+    if IRIS_TRANSPORT == "pi":
+        if pi_client is None:
+            return False
+        # Existing V7 code uses legacy gripper values: 0=open, 70=closed.
+        # Convert at the transport boundary: 0=closed, 90=open.
+        pi_angle = 90.0 - (float(angle) / 70.0) * 90.0 if int(ch) == 0 else float(angle)
+        result = pi_client.set_angle(int(ch), pi_angle)
+        status = result.get("status")
+        if status in ("moved", "dry_run"):
+            pi_reported_errors.discard(int(ch))
+            return status == "moved"
+        if int(ch) not in pi_reported_errors:
+            print(f"⚠ Pi rejected channel {ch}: {result.get('error', status)}")
+            pi_reported_errors.add(int(ch))
+        return False
+
+    if IRIS_TRANSPORT == "legacy_serial" and ser and ser.is_open:
         cmd = f"ch {ch} {angle}\n"
         ser.write(cmd.encode())
         time.sleep(0.005)
+        return True
+    return False
 
 
 def compensate_base_y_servo(angle):
@@ -2637,10 +2686,38 @@ def compensated_servo_targets(servo_angles):
     return out
 
 
+def send_batch_raw(targets):
+    """Send one movement frame to the Pi instead of one TCP request per joint."""
+    if not targets:
+        return False
+    if IRIS_TRANSPORT == "pi":
+        if pi_client is None:
+            return False
+        converted = {
+            int(ch): (90.0 - (float(angle) / 70.0) * 90.0 if int(ch) == 0 else float(angle))
+            for ch, angle in targets.items()
+        }
+        result = pi_client.set_angles(converted)
+        status = result.get("status")
+        if status in ("moved", "dry_run"):
+            pi_reported_errors.clear()
+            return status == "moved"
+        error_key = min(int(ch) for ch in targets)
+        if error_key not in pi_reported_errors:
+            print(f"⚠ Pi rejected coordinated target: {result.get('error', status)}")
+            pi_reported_errors.add(error_key)
+        return False
+    if IRIS_TRANSPORT == "legacy_serial":
+        results = [send_raw(ch, angle) for ch, angle in targets.items()]
+        return all(results)
+    return False
+
+
 def smooth_move_worker():
     global moving, STEP_SIZE, STEP_DELAY
     while moving:
         any_moving = False
+        updates = {}
         with move_lock:
             for ch in list(target_angles.keys()):
                 target = target_angles[ch]
@@ -2649,23 +2726,24 @@ def smooth_move_worker():
                 if diff < 0.5:
                     if current != target:
                         current_angles[ch] = target
-                        send_raw(ch, int(target))
+                        updates[ch] = int(round(target))
                     continue
                 any_moving = True
-                # Ease-in/ease-out: move faster in middle, slower near start/end
-                # Use proportional speed based on remaining distance
+                # Ease-in/ease-out: move faster in middle, slower near start/end.
                 if diff < 5:
-                    step = max(0.5, STEP_SIZE * 0.4)  # decelerate near target
+                    step = max(0.5, STEP_SIZE * 0.4)
                 elif diff < 15:
-                    step = STEP_SIZE * 0.7  # medium speed near target
+                    step = STEP_SIZE * 0.7
                 else:
-                    step = STEP_SIZE  # full speed in middle
+                    step = STEP_SIZE
                 if current < target:
                     current = min(current + step, target)
                 else:
                     current = max(current - step, target)
                 current_angles[ch] = current
-                send_raw(ch, int(round(current)))
+                updates[ch] = int(round(current))
+        if updates:
+            send_batch_raw(updates)
         time.sleep(STEP_DELAY if any_moving else 0.05)
 
 def set_target(ch, angle):
@@ -2799,6 +2877,8 @@ def _pattern_loop():
         time.sleep(tick_s)
 
 def start_pattern(kind, z_mm, cycle_ms, wrist_roll_deg=None):
+    if not ALLOW_PRESET_MOTIONS:
+        return {"ok": False, "running": False, "error": "Preset motions are disabled. Review calibration before enabling IRIS_ALLOW_PRESET_MOTIONS=1."}
     with pattern_lock:
         if pattern_state["running"]:
             # Just update parameters live.
@@ -2852,6 +2932,8 @@ def ps4_manual_status():
 def start_ps4_manual_process():
     """Start the fresh PS4 controller script from the visualizer/bridge."""
     global ps4_manual_process
+    if not ALLOW_PRESET_MOTIONS:
+        return {"ok": False, "running": False, "error": "Manual gamepad motion is disabled until servo calibration and review are complete."}
     with ps4_manual_lock:
         if ps4_manual_process is not None and ps4_manual_process.poll() is None:
             return ps4_manual_status()
@@ -2933,6 +3015,8 @@ def run_hello_wave():
 
 
 def start_hello_wave():
+    if not ALLOW_PRESET_MOTIONS:
+        return {"ok": False, "running": False, "error": "Hello-wave preset is disabled until servo calibration and review are complete."}
     with hello_lock:
         if hello_running:
             return {"ok": True, "running": True}
@@ -3019,6 +3103,8 @@ def run_dance(seconds=DANCE_DEFAULT_DURATION_SECONDS, bpm=DANCE_DEFAULT_BPM):
 
 
 def start_dance(seconds=DANCE_DEFAULT_DURATION_SECONDS, bpm=DANCE_DEFAULT_BPM):
+    if not ALLOW_PRESET_MOTIONS:
+        return {"ok": False, "running": False, "error": "Dance preset is disabled until servo calibration and review are complete."}
     with dance_lock:
         if dance_running:
             return {"ok": True, "running": True}
@@ -3050,9 +3136,13 @@ class BridgeHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
 
         if parsed.path == "/ping":
+            pi_status = pi_client.ping() if pi_client is not None else None
             self.respond_json({
                 "status": "ok",
+                "transport": IRIS_TRANSPORT,
                 "serial": ser is not None and ser.is_open,
+                "controller_connected": bool(pi_status and pi_status.get("status") == "ok") if IRIS_TRANSPORT == "pi" else bool(ser and ser.is_open),
+                "controller": pi_status,
                 "ikpy": True,
                 "vision": vision_info.get("loaded", False)
             })
@@ -3110,14 +3200,15 @@ class BridgeHandler(BaseHTTPRequestHandler):
         # ─── Gripper INSTANT (bypass smooth mover) ───
         if parsed.path == "/gripper":
             params = parse_qs(parsed.query)
-            angle = int(params.get("angle", [0])[0])
-            angle = max(0, min(70, angle))  # clamp 0-70
-            send_raw(0, angle)
+            # Public convention: 0° = CLOSED, 90° = OPEN.
+            angle = max(0, min(90, int(params.get("angle", [0])[0])))
+            legacy_angle = int(round(70.0 * (1.0 - angle / 90.0)))
+            send_raw(0, legacy_angle)
             with move_lock:
-                current_angles[0] = angle
-                target_angles[0] = angle
+                current_angles[0] = legacy_angle
+                target_angles[0] = legacy_angle
             print(f"  Gripper INSTANT → {angle}°")
-            self.respond_json({"ok": True, "ch": 0, "angle": angle, "instant": True})
+            self.respond_json({"ok": True, "ch": 0, "angle": angle, "convention": "0=closed,90=open", "instant": True})
             return
 
         # ─── Camera control ───
@@ -3225,6 +3316,23 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self.respond_json({"error": "iris_visualizer.html not found"}, 404)
             return
 
+        # ─── Local-only single-servo calibration panel ───
+        if parsed.path == "/calibration":
+            local_clients = {"127.0.0.1", "::1", os.environ.get("IRIS_PC_IP", "192.168.1.213")}
+            if self.client_address[0] not in local_clients:
+                self.respond_json({"error": "Calibration UI is restricted to the Dell PC."}, 403)
+                return
+            html_path = os.path.join(SCRIPT_DIR, "iris_calibration.html")
+            if os.path.exists(html_path):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                with open(html_path, "rb") as f:
+                    self.wfile.write(f.read())
+                return
+            self.respond_json({"error": "iris_calibration.html not found"}, 404)
+            return
+
         # ─── Serve IRIS Live interface ───
         if parsed.path == "/live":
             html_path = os.path.join(SCRIPT_DIR, "iris_live.html")
@@ -3244,6 +3352,34 @@ class BridgeHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length).decode()
+
+        if parsed.path in ("/calibration/jog", "/calibration/stop"):
+            pc_ip = os.environ.get("IRIS_PC_IP", "192.168.1.213")
+            local_clients = {"127.0.0.1", "::1", pc_ip}
+            allowed_origins = {
+                f"http://localhost:{HTTP_PORT}",
+                f"http://127.0.0.1:{HTTP_PORT}",
+                f"http://{pc_ip}:{HTTP_PORT}",
+            }
+            request_origin = self.headers.get("Origin", "")
+            if self.client_address[0] not in local_clients or request_origin not in allowed_origins:
+                self.respond_json({"error": "Calibration controls accept requests only from the Dell-local IRIS page."}, 403)
+                return
+            if IRIS_TRANSPORT != "pi" or pi_client is None:
+                self.respond_json({"error": "Raspberry Pi controller is not connected."}, 503)
+                return
+            if parsed.path == "/calibration/stop":
+                result = pi_client.stop()
+            else:
+                try:
+                    data = json.loads(body)
+                    result = pi_client.calibration_jog(int(data["channel"]), float(data["pulse_us"]))
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                    self.respond_json({"error": f"Invalid calibration request: {exc}"}, 400)
+                    return
+            status_code = 200 if result.get("status") in ("calibration_jogged", "stopped") else 403
+            self.respond_json(result, status_code)
+            return
 
         if parsed.path == "/gamepad/start":
             self.respond_json(start_ps4_manual_process())
@@ -3505,6 +3641,10 @@ The points are in [y, x] format normalized to 0-1000."""
 
                 # Auto-pick: move to first detected object
                 ik_result = None
+                if auto_pick and len(robot_points) > 0 and send and not ALLOW_AUTONOMOUS_MOTION:
+                    self.respond_json({"error": "Autonomous pick is disabled. Complete servo and workspace calibration before enabling IRIS_ALLOW_AUTONOMOUS_MOTION=1."}, 403)
+                    return
+
                 if auto_pick and len(robot_points) > 0 and send:
                     target = robot_points[0]
                     target_m = [target["robot"]["x"] / 1000, target["robot"]["y"] / 1000, pick_z / 1000]
@@ -3579,20 +3719,18 @@ The points are in [y, x] format normalized to 0-1000."""
         if parsed.path == "/robotics/cancel":
             robotics_cancel_flag[0] = True
             print("  🛑 Robotics cancel requested!")
-            # Send arm home immediately
-            send_raw(0, 0)  # open gripper
-            with move_lock:
-                current_angles[0] = 0
-                target_angles[0] = 0
-            time.sleep(0.5)
-            target_m = [0.2, 0.0, 0.25]
-            servo_angles, error, actual_mm = solve_ik(target_m)
-            for ch, angle in servo_angles.items():
-                set_target(ch, angle)
-            last_wrist_roll[0] = 55  # reset wrist roll
-            # Wait a bit so the running task thread sees the cancel flag
-            time.sleep(1.0)
-            self.respond_json({"ok": True, "cancelled": True})
+            # Stop means disable PWM outputs; never guess a "home" pose on cancel.
+            stop_result = pi_client.stop() if pi_client is not None else {
+                "status": "unavailable",
+                "hardware_moved": False,
+            }
+            time.sleep(0.1)
+            self.respond_json({
+                "ok": True,
+                "cancelled": True,
+                "controller_stop": stop_result,
+                "note": "PWM outputs disabled when Pi is connected; use the physical servo-power switch for emergency power removal.",
+            })
             return
 
         # ─── ROBOTICS STATUS ───
@@ -3607,6 +3745,9 @@ The points are in [y, x] format normalized to 0-1000."""
         # ─── ROBOTICS EXECUTE ENDPOINT (called by Live API) ───
         # Live API sends a task description, Robotics ER does the multi-turn execution
         if parsed.path == "/robotics/execute":
+            if not ALLOW_AUTONOMOUS_MOTION:
+                self.respond_json({"error": "Autonomous robotics tasks are disabled until servo and workspace calibration are complete."}, 403)
+                return
             try:
                 data = json.loads(body)
                 task = data.get("task", "")
@@ -3619,11 +3760,9 @@ The points are in [y, x] format normalized to 0-1000."""
                 if robotics_status[0] != "idle":
                     print(f"  ⚠ Previous task still running, cancelling...")
                     robotics_cancel_flag[0] = True
-                    # Send arm home
-                    send_raw(0, 0)
-                    with move_lock:
-                        current_angles[0] = 0
-                        target_angles[0] = 0
+                    # Disable PWM outputs instead of issuing an uncalibrated "home" pose.
+                    if pi_client is not None:
+                        pi_client.stop()
                     # Wait for old task to see cancel flag and stop
                     for _ in range(20):  # max 2 seconds
                         time.sleep(0.1)
@@ -3814,6 +3953,9 @@ The points are in [y, x] format normalized to 0-1000."""
 
         # ─── AGENT CHAT ENDPOINT (SSE streaming) ───
         if parsed.path == "/agent/chat":
+            if not ALLOW_AUTONOMOUS_MOTION:
+                self.respond_json({"error": "Agent tool execution is disabled until servo and workspace calibration are complete."}, 403)
+                return
             try:
                 data = json.loads(body)
                 user_message = data.get("message", "")
@@ -3942,13 +4084,19 @@ The points are in [y, x] format normalized to 0-1000."""
 
 if __name__ == "__main__":
     print("╔══════════════════════════════════════════════════╗")
-    print("║  IRIS Bridge v6.0 — Agent + Voice + Vision        ║")
-    print("║  Browser → Agent/Gemini → IK → Serial → ESP32     ║")
+    print("║  IRIS Bridge v7.0 — Agent + Voice + Vision        ║")
+    print("║  Dell Vision/IK → Network → Pi PCA9685            ║")
     print("╚══════════════════════════════════════════════════╝")
     print()
 
-    if not connect_serial():
-        print("⚠ Running without serial (test mode)\n")
+    if IRIS_TRANSPORT == "pi":
+        if not connect_pi():
+            print("⚠ Pi controller not connected. No actuator movement is available.\n")
+    elif IRIS_TRANSPORT == "legacy_serial":
+        if not connect_serial():
+            print("⚠ Running without legacy serial (test mode)\n")
+    else:
+        raise RuntimeError("IRIS_TRANSPORT must be 'pi' or 'legacy_serial'.")
 
     moving = True
     t = threading.Thread(target=smooth_move_worker, daemon=True)
@@ -3969,7 +4117,7 @@ if __name__ == "__main__":
     print(f"  POST /dance/stop    — stop music dance routine")
     print(f"  POST /gamepad/start — start PS4 manual controller")
     print(f"  POST /gamepad/stop  — stop PS4 manual controller")
-    print(f"  GET  /gripper       — instant gripper (0=open, 70=closed)")
+    print(f"  GET  /gripper       — instant gripper (0=closed, 90=open)")
     print("Press Ctrl+C to stop\n")
 
     class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
@@ -3985,5 +4133,7 @@ if __name__ == "__main__":
         stop_camera()
         if ser and ser.is_open:
             ser.close()
+        if pi_client is not None:
+            pi_client.close()
         server.server_close()
         print("✓ Done")
