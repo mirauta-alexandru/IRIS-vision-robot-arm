@@ -137,6 +137,7 @@ class PiControllerHardwareGateTests(unittest.TestCase):
         pca = FakePCA9685.instances[0]
         for item in controller.CHANNELS.values():
             item["enabled"] = True
+            item["calibration_verified"] = True
             item["angle_min"] = 0
             item["angle_max"] = 180
             item["pulse_min_us"] = 1000
@@ -163,6 +164,23 @@ class PiControllerHardwareGateTests(unittest.TestCase):
             controller.handle_command(
                 {"command": "SET_PULSE", "channel": 0, "pulse_us": 1500}
             )
+
+    def test_enabled_but_unverified_calibration_is_still_blocked(self):
+        controller = load_controller(hardware="1", coordinated="1")
+        item = controller.CHANNELS["0"]
+        item.update({
+            "enabled": True,
+            "angle_min": 0,
+            "angle_max": 90,
+            "pulse_min_us": 1000,
+            "pulse_max_us": 2000,
+            "calibration_verified": False,
+        })
+        with self.assertRaises(PermissionError):
+            controller.handle_command(
+                {"command": "SET_ANGLE", "channel": 0, "angle": 45}
+            )
+        self.assertTrue(all(ch.duty_cycle == 0 for ch in FakePCA9685.instances[0].channels))
 
     def test_stop_latches_calibration_jog(self):
         controller = load_controller(hardware="1", calibration="1")
