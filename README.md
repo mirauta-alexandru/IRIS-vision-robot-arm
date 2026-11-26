@@ -121,7 +121,7 @@ export IRIS_TRANSPORT=pi
 python files/iris_bridge.py
 ```
 
-Do not set `IRIS_ENABLE_HARDWARE=1` until the individual servo pulse limits have been measured and entered in `pi/servo_calibration.json`.
+Keep `IRIS_ENABLE_HARDWARE=0` during setup and dry-run testing. Before any live movement, measure and enter BOTH the angle and pulse limits for every channel in `pi/servo_calibration.json`, then review the mechanics and motion paths. Coordinated movement additionally requires the separate `IRIS_ALLOW_COORDINATED_MOTION=1` gate. Preset motions and autonomous tasks remain disabled unless their separate Dell-side opt-in flags are deliberately enabled. The Pi's STOP command latches until the controller process is restarted.
 
 Open the live interface:
 
@@ -129,7 +129,7 @@ Open the live interface:
 http://localhost:8765/live
 ```
 
-Optional manual gamepad control:
+Manual gamepad control (locked by default until calibration review):
 
 ```bash
 python files/iris_ps4_manual.py
