@@ -34,6 +34,8 @@ IRIS_TRANSPORT = os.environ.get("IRIS_TRANSPORT", "pi").strip().lower()
 PI_HOST = os.environ.get("IRIS_PI_HOST", "192.168.1.196")
 PI_PORT = int(os.environ.get("IRIS_PI_PORT", "8766"))
 IRIS_TOKEN = os.environ.get("IRIS_TOKEN", "")
+ALLOW_PRESET_MOTIONS = os.environ.get("IRIS_ALLOW_PRESET_MOTIONS", "0") == "1"
+ALLOW_AUTONOMOUS_MOTION = os.environ.get("IRIS_ALLOW_AUTONOMOUS_MOTION", "0") == "1"
 
 # Gemini config
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
@@ -2846,6 +2848,8 @@ def _pattern_loop():
         time.sleep(tick_s)
 
 def start_pattern(kind, z_mm, cycle_ms, wrist_roll_deg=None):
+    if not ALLOW_PRESET_MOTIONS:
+        return {"ok": False, "running": False, "error": "Preset motions are disabled. Review calibration before enabling IRIS_ALLOW_PRESET_MOTIONS=1."}
     with pattern_lock:
         if pattern_state["running"]:
             # Just update parameters live.
@@ -2899,6 +2903,8 @@ def ps4_manual_status():
 def start_ps4_manual_process():
     """Start the fresh PS4 controller script from the visualizer/bridge."""
     global ps4_manual_process
+    if not ALLOW_PRESET_MOTIONS:
+        return {"ok": False, "running": False, "error": "Manual gamepad motion is disabled until servo calibration and review are complete."}
     with ps4_manual_lock:
         if ps4_manual_process is not None and ps4_manual_process.poll() is None:
             return ps4_manual_status()
@@ -2980,6 +2986,8 @@ def run_hello_wave():
 
 
 def start_hello_wave():
+    if not ALLOW_PRESET_MOTIONS:
+        return {"ok": False, "running": False, "error": "Hello-wave preset is disabled until servo calibration and review are complete."}
     with hello_lock:
         if hello_running:
             return {"ok": True, "running": True}
@@ -3066,6 +3074,8 @@ def run_dance(seconds=DANCE_DEFAULT_DURATION_SECONDS, bpm=DANCE_DEFAULT_BPM):
 
 
 def start_dance(seconds=DANCE_DEFAULT_DURATION_SECONDS, bpm=DANCE_DEFAULT_BPM):
+    if not ALLOW_PRESET_MOTIONS:
+        return {"ok": False, "running": False, "error": "Dance preset is disabled until servo calibration and review are complete."}
     with dance_lock:
         if dance_running:
             return {"ok": True, "running": True}
@@ -3557,6 +3567,10 @@ The points are in [y, x] format normalized to 0-1000."""
 
                 # Auto-pick: move to first detected object
                 ik_result = None
+                if auto_pick and len(robot_points) > 0 and send and not ALLOW_AUTONOMOUS_MOTION:
+                    self.respond_json({"error": "Autonomous pick is disabled. Complete servo and workspace calibration before enabling IRIS_ALLOW_AUTONOMOUS_MOTION=1."}, 403)
+                    return
+
                 if auto_pick and len(robot_points) > 0 and send:
                     target = robot_points[0]
                     target_m = [target["robot"]["x"] / 1000, target["robot"]["y"] / 1000, pick_z / 1000]
@@ -3659,6 +3673,9 @@ The points are in [y, x] format normalized to 0-1000."""
         # ─── ROBOTICS EXECUTE ENDPOINT (called by Live API) ───
         # Live API sends a task description, Robotics ER does the multi-turn execution
         if parsed.path == "/robotics/execute":
+            if not ALLOW_AUTONOMOUS_MOTION:
+                self.respond_json({"error": "Autonomous robotics tasks are disabled until servo and workspace calibration are complete."}, 403)
+                return
             try:
                 data = json.loads(body)
                 task = data.get("task", "")
