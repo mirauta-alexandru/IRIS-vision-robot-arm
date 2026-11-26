@@ -6,8 +6,8 @@ accepts authenticated joint targets over the trusted local network.
 
 Hardware movement is OFF unless BOTH conditions are met:
   1. IRIS_ENABLE_HARDWARE=1
-  2. The requested channel has enabled=true and valid pulse limits in
-     servo_calibration.json.
+  2. For normal angle commands, all seven channels are enabled and calibrated.
+     Single-channel pulse jogging additionally requires IRIS_CALIBRATION_MODE=1.
 
 This is a prototype controller, not a safety-rated emergency stop.
 """
@@ -112,6 +112,8 @@ def set_angle(channel: int, angle: float) -> dict[str, Any]:
     item = get_channel_config(channel)
     angle_min = float(item["angle_min"])
     angle_max = float(item["angle_max"])
+    if angle_min >= angle_max:
+        raise ValueError(f"Channel {channel} angle limits are invalid.")
     if not angle_min <= angle <= angle_max:
         raise ValueError(
             f"Angle {angle:g} degrees is outside channel {channel} limits "
@@ -134,7 +136,15 @@ def all_arm_channels_calibrated() -> bool:
             return False
         pulse_min = item.get("pulse_min_us")
         pulse_max = item.get("pulse_max_us")
+        angle_min = item.get("angle_min")
+        angle_max = item.get("angle_max")
         if not isinstance(pulse_min, (int, float)) or not isinstance(pulse_max, (int, float)):
+            return False
+        if not 400 <= pulse_min < pulse_max <= 2600:
+            return False
+        if not isinstance(angle_min, (int, float)) or not isinstance(angle_max, (int, float)):
+            return False
+        if angle_min >= angle_max:
             return False
     return True
 
