@@ -3879,6 +3879,9 @@ The points are in [y, x] format normalized to 0-1000."""
 
         # ─── AGENT CHAT ENDPOINT (SSE streaming) ───
         if parsed.path == "/agent/chat":
+            if not ALLOW_AUTONOMOUS_MOTION:
+                self.respond_json({"error": "Agent tool execution is disabled until servo and workspace calibration are complete."}, 403)
+                return
             try:
                 data = json.loads(body)
                 user_message = data.get("message", "")
