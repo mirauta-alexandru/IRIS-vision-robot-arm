@@ -1,0 +1,68 @@
+{
+  "frequency_hz": 50,
+  "channels": {
+    "0": {
+      "name": "gripper_mg90s",
+      "enabled": false,
+      "angle_min": 0,
+      "angle_max": 90,
+      "pulse_min_us": null,
+      "pulse_max_us": null,
+      "notes": "User convention: 0 degrees CLOSED, 90 degrees OPEN. Pulse endpoints must be calibrated before enabling."
+    },
+    "1": {
+      "name": "wrist_rotation_mg90s",
+      "enabled": false,
+      "angle_min": 85,
+      "angle_max": 95,
+      "pulse_min_us": 1500,
+      "pulse_max_us": 1600,
+      "notes": "Provisional only: 90 degrees is the user's 1550 us reference. Keep disabled until mechanically checked."
+    },
+    "2": {
+      "name": "wrist_pitch_mg90s",
+      "enabled": false,
+      "angle_min": 0,
+      "angle_max": 180,
+      "pulse_min_us": null,
+      "pulse_max_us": null,
+      "notes": "Not calibrated."
+    },
+    "3": {
+      "name": "elbow_mg996r",
+      "enabled": false,
+      "angle_min": 0,
+      "angle_max": 180,
+      "pulse_min_us": null,
+      "pulse_max_us": null,
+      "notes": "Not calibrated."
+    },
+    "4": {
+      "name": "shoulder_a_mg996r",
+      "enabled": false,
+      "angle_min": 0,
+      "angle_max": 180,
+      "pulse_min_us": null,
+      "pulse_max_us": null,
+      "notes": "Not calibrated."
+    },
+    "5": {
+      "name": "shoulder_b_mg996r",
+      "enabled": false,
+      "angle_min": 0,
+      "angle_max": 180,
+      "pulse_min_us": null,
+      "pulse_max_us": null,
+      "notes": "Not calibrated."
+    },
+    "6": {
+      "name": "base_mg996r",
+      "enabled": false,
+      "angle_min": 0,
+      "angle_max": 180,
+      "pulse_min_us": null,
+      "pulse_max_us": null,
+      "notes": "Not calibrated."
+    }
+  }
+}
