@@ -59,10 +59,12 @@ Gripper convention at the public API: **0° = CLOSED; 90° = OPEN**.
 
 The Pi converts joint angles into pulse widths using `pi/servo_calibration.json`. Every channel is disabled in the committed configuration.
 
-A servo can move only when BOTH conditions are true:
+Coordinated angle motion is allowed only when all seven channels have valid calibrated pulse limits and BOTH conditions are true:
 
 1. The Pi process has `IRIS_ENABLE_HARDWARE=1`.
-2. That channel has `"enabled": true` and valid calibrated pulse endpoints in `servo_calibration.json`.
+2. Every channel CH0–CH6 has `"enabled": true` and valid calibrated pulse endpoints in `servo_calibration.json`.
+
+Direct single-channel pulse jogging is separate and requires `IRIS_CALIBRATION_MODE=1`; it is intended only for controlled calibration, never for normal IK or autonomous movement.
 
 CH1 contains a provisional 1500–1600 µs range corresponding to 85–95° around the user's 1550 µs / 90° reference, but it remains disabled. It must be mechanically checked before enabling.
 
