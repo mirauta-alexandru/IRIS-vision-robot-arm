@@ -2660,7 +2660,7 @@ def send_raw(ch, angle):
         return False
 
     if IRIS_TRANSPORT == "legacy_serial" and ser and ser.is_open:
-        cmd = f"ch {ch} {angle}\\n"
+        cmd = f"ch {ch} {angle}\n"
         ser.write(cmd.encode())
         time.sleep(0.005)
         return True
@@ -4001,10 +4001,10 @@ if __name__ == "__main__":
 
     if IRIS_TRANSPORT == "pi":
         if not connect_pi():
-            print("⚠ Pi controller not connected. No actuator movement is available.\\n")
+            print("⚠ Pi controller not connected. No actuator movement is available.\n")
     elif IRIS_TRANSPORT == "legacy_serial":
         if not connect_serial():
-            print("⚠ Running without legacy serial (test mode)\\n")
+            print("⚠ Running without legacy serial (test mode)\n")
     else:
         raise RuntimeError("IRIS_TRANSPORT must be 'pi' or 'legacy_serial'.")
 
