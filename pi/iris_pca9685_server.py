@@ -30,6 +30,7 @@ PORT = int(os.environ.get("IRIS_PI_PORT", "8766"))
 ALLOWED_PC_IP = os.environ.get("IRIS_ALLOWED_PC_IP", "192.168.1.213")
 TOKEN = os.environ.get("IRIS_TOKEN", "")
 HARDWARE_ENABLED = os.environ.get("IRIS_ENABLE_HARDWARE", "0") == "1"
+CALIBRATION_MODE = os.environ.get("IRIS_CALIBRATION_MODE", "0") == "1"
 CONFIG_PATH = Path(__file__).with_name("servo_calibration.json")
 MAX_LINE_BYTES = 4096
 
@@ -125,6 +126,19 @@ def set_angle(channel: int, angle: float) -> dict[str, Any]:
     return result
 
 
+def all_arm_channels_calibrated() -> bool:
+    """Require all seven arm joints before accepting coordinated angle motion."""
+    for channel in range(7):
+        item = CHANNELS.get(str(channel))
+        if not isinstance(item, dict) or item.get("enabled") is not True:
+            return False
+        pulse_min = item.get("pulse_min_us")
+        pulse_max = item.get("pulse_max_us")
+        if not isinstance(pulse_min, (int, float)) or not isinstance(pulse_max, (int, float)):
+            return False
+    return True
+
+
 def handle_command(command: dict[str, Any]) -> dict[str, Any]:
     action = str(command.get("command", "")).upper()
 
@@ -137,21 +151,31 @@ def handle_command(command: dict[str, Any]) -> dict[str, Any]:
                 int(ch) for ch, cfg in CHANNELS.items()
                 if isinstance(cfg, dict) and cfg.get("enabled") is True
             ],
+            full_arm_ready=all_arm_channels_calibrated(),
+            calibration_mode=CALIBRATION_MODE,
         )
 
     if action == "STOP":
         if HARDWARE_ENABLED and pca is not None:
             for channel in range(16):
                 pca.channels[channel].duty_cycle = 0
-            return response("outputs_disabled", hardware_moved=True)
+            return response("outputs_disabled", outputs_disabled=True)
         return response("dry_run", message="No PWM outputs were active.")
 
     if action == "SET_ANGLE":
+        if HARDWARE_ENABLED and not all_arm_channels_calibrated():
+            raise PermissionError(
+                "Coordinated angle motion is locked until all seven servo channels are calibrated."
+            )
         channel = int(command["channel"])
         angle = float(command["angle"])
         return set_angle(channel, angle)
 
     if action == "SET_PULSE":
+        if HARDWARE_ENABLED and not CALIBRATION_MODE:
+            raise PermissionError(
+                "Direct pulse commands require IRIS_CALIBRATION_MODE=1."
+            )
         channel = int(command["channel"])
         pulse_us = float(command["pulse_us"])
         return set_pulse(channel, pulse_us)
