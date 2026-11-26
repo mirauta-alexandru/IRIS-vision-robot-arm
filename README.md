@@ -137,7 +137,7 @@ The Dell-local single-servo calibration panel is available at:
 http://localhost:8765/calibration
 ```
 
-It is restricted to the Dell PC and only enables its jog button when the Pi reports both hardware and calibration mode enabled. The temporary jog range is ±25 µs; remove the servo horn/linkage and unload the joint before using it.
+It is restricted to the Dell PC and only enables its jog button when the Pi reports both hardware and calibration mode enabled. The temporary jog range is ±25 µs; remove the servo horn/linkage and unload the joint before using it. The panel can also record two measured pulse/angle reference points and export an individual channel JSON draft. Drafts always keep `enabled=false` and `calibration_verified=false`; the Pi rejects unverified calibration even if a channel is accidentally marked enabled. The two-point mapping supports both normal and reversed servo directions, but it does not establish safe mechanical endpoints.
 
 Manual gamepad control (locked by default until calibration review):
 
