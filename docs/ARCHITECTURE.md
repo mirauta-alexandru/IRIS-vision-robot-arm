@@ -1,87 +1,103 @@
 # IRIS Architecture
 
-IRIS is organized as layered robotics software. Each layer has a clear responsibility, so the AI planner does not need to know about PWM pulses, and the ESP32 does not need to understand high-level tasks.
+IRIS uses a two-computer architecture. The Dell is the brain; the Raspberry Pi is the real-time hardware controller.
 
-## Layer 3 - Voice & Hearing
+## Dell Precision 3460 — Brain
 
-The live interface provides the human-facing loop:
+The Dell runs:
 
-- listens for commands;
-- responds conversationally;
-- forwards task requests to the robotic execution layer;
-- displays camera feedback and action traces.
+- Logitech C270 camera capture;
+- OpenCV and object detection;
+- ChArUco camera/workspace calibration;
+- pixel-to-robot coordinate conversion;
+- AI planning and the browser/voice interface;
+- IKPy inverse kinematics and URDF calculations;
+- the HTTP bridge on port 8765.
 
-The voice layer should not directly control servos. It delegates to structured tools exposed by the bridge.
+The existing vision and IK pipeline remains on the Dell. The Raspberry Pi is not expected to run camera vision or AI models.
 
-## Layer 2 - Brain
+## Network Link
 
-The brain layer is the embodied reasoning/orchestration layer.
+The Dell bridge sends JSON-line commands to the Raspberry Pi over the trusted local network.
 
-It receives a command such as:
+- Dell address: `192.168.1.213`
+- Raspberry Pi address: `192.168.1.196`
+- Pi controller port: `8766`
+- Both devices must have the same `IRIS_TOKEN`.
+- The Pi accepts commands only from the configured `IRIS_ALLOWED_PC_IP`.
+
+The token is sent over plain TCP. Keep this service on a trusted LAN and do not expose port 8766 to the internet.
+
+## Raspberry Pi 4 — Hardware Controller
+
+The Pi runs `pi/iris_pca9685_server.py` and controls the PCA9685 over I2C.
+
+| Pi connection | PCA9685 |
+| --- | --- |
+| Physical pin 1 / 3.3V | VCC |
+| Physical pin 3 / GPIO2 / SDA | SDA |
+| Physical pin 5 / GPIO3 / SCL | SCL |
+| Physical pin 6 / GND | GND |
+
+The external regulated 5V supply powers the servo V+ rail. The Pi must not power the servos. Pi GND, PCA9685 GND, and power-supply GND must be common.
+
+## PCA9685 Channel Map
+
+| Channel | Joint | Servo |
+| --- | --- | --- |
+| CH0 | Gripper | MG90S |
+| CH1 | Wrist rotation | MG90S |
+| CH2 | Wrist pitch | MG90S |
+| CH3 | Elbow | MG996R |
+| CH4 | Shoulder A | MG996R |
+| CH5 | Shoulder B | MG996R |
+| CH6 | Base | MG996R |
+
+Gripper convention at the public API: **0° = CLOSED; 90° = OPEN**.
+
+## Servo Calibration and Safety Gates
+
+The Pi converts joint angles into pulse widths using `pi/servo_calibration.json`. Every channel is disabled in the committed configuration.
+
+A servo can move only when BOTH conditions are true:
+
+1. The Pi process has `IRIS_ENABLE_HARDWARE=1`.
+2. That channel has `"enabled": true` and valid calibrated pulse endpoints in `servo_calibration.json`.
+
+CH1 contains a provisional 1500–1600 µs range corresponding to 85–95° around the user's 1550 µs / 90° reference, but it remains disabled. It must be mechanically checked before enabling.
+
+Do not copy old V7 offsets or broad degree limits into the Pi calibration file. Calibrate each joint individually, with the linkage unloaded where possible. Stop immediately if a servo buzzes, stalls, heats, or needs manual force.
+
+The network `STOP` command disables PWM outputs when hardware mode is active, but it is not a safety-rated emergency stop. The physical servo-power switch remains the actual emergency power disconnect.
+
+## Command Flow
 
 ```text
-pick up the 3x3 cube
+Camera (Logitech C270)
+        |
+        v
+Dell: OpenCV + object detection + calibration
+        |
+        v
+Dell: AI planner + IKPy + HTTP bridge (:8765)
+        |
+        | authenticated JSON over TCP (:8766)
+        v
+Raspberry Pi 4: PCA9685 controller
+        |
+        | I2C
+        v
+PCA9685 at 50 Hz
+        |
+        v
+MG90S / MG996R servos
 ```
 
-Then it plans a sequence:
+## Current Implementation Status
 
-1. detect the object;
-2. open the gripper;
-3. move above the object;
-4. align wrist roll;
-5. descend;
-6. visually check proximity;
-7. close the gripper;
-8. lift and verify.
-
-The model does not send raw PWM or servo values. It calls structured functions such as `detect_objects`, `move_arm`, `open_gripper`, and `close_gripper`.
-
-## Layer 2 - Eyes
-
-The vision layer converts camera pixels to robot coordinates.
-
-Recommended baseline:
-
-```text
-camera calibration -> ChArUco board solvePnP -> camera-to-robot transform -> ray-plane intersection
-```
-
-This avoids relying on a fragile manual correction map as the default path.
-
-## Layer 2 - Cerebellum
-
-The cerebellum layer solves inverse kinematics.
-
-Input:
-
-```text
-x, y, z target in millimeters
-```
-
-Output:
-
-```text
-servo angles for base, shoulder, elbow, wrist pitch, wrist roll
-```
-
-The URDF model in `files/iris_arm.urdf` defines the kinematic chain used by IKPy.
-
-## Layer 1 - Spine
-
-The spine is the low-level control path:
-
-- Python bridge computes target servo angles.
-- ESP32 receives commands over serial.
-- PCA9685 generates stable 50 Hz PWM.
-- Servos execute the movement.
-
-## Layer 0 - Body
-
-The physical arm is a modified 3D-printed 6-DOF design with:
-
-- larger custom gripper;
-- bearing-supported joints;
-- wire protection in the base;
-- dedicated ATX PSU enclosure.
-
-Mechanical flex, servo backlash, and gripper geometry are expected sources of error and should be treated as part of the system.
+- Dell vision and IK remain in the existing project.
+- Dell-to-Pi authenticated TCP client is implemented.
+- Pi PCA9685 server is implemented.
+- All servo channels are disabled by default.
+- Hardware movement remains off until per-channel pulse calibration is complete.
+- Automatic pick, dance, and broad legacy poses must not be used as calibration tests.
