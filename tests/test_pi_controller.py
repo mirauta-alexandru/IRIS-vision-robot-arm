@@ -126,6 +126,31 @@ class PiControllerHardwareGateTests(unittest.TestCase):
                 {"command": "SET_ANGLE", "channel": 0, "angle": 45}
             )
 
+    def test_batched_targets_validate_every_joint_before_any_pwm_write(self):
+        controller = load_controller(hardware="1", coordinated="1")
+        pca = FakePCA9685.instances[0]
+        for item in controller.CHANNELS.values():
+            item["enabled"] = True
+            item["angle_min"] = 0
+            item["angle_max"] = 180
+            item["pulse_min_us"] = 1000
+            item["pulse_max_us"] = 2000
+        with self.assertRaises(ValueError):
+            controller.handle_command({
+                "command": "SET_ANGLES",
+                "angles": {"0": 45, "1": 90, "2": 181},
+            })
+        self.assertTrue(all(channel.duty_cycle == 0 for channel in pca.channels))
+        result = controller.handle_command({
+            "command": "SET_ANGLES",
+            "angles": {"0": 45, "1": 90},
+        })
+        self.assertEqual(result["status"], "moved")
+        self.assertTrue(result["hardware_moved"])
+        self.assertNotEqual(pca.channels[0].duty_cycle, 0)
+        self.assertNotEqual(pca.channels[1].duty_cycle, 0)
+        self.assertEqual(pca.channels[2].duty_cycle, 0)
+
     def test_disabled_channel_cannot_receive_direct_pulse(self):
         controller = load_controller(hardware="1", calibration="1")
         with self.assertRaises(PermissionError):
