@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import math
 import os
 import socketserver
 from pathlib import Path
@@ -89,6 +90,14 @@ def pulse_to_duty_cycle(pulse_us: float) -> int:
 
 
 def set_pulse(channel: int, pulse_us: float) -> dict[str, Any]:
+    if not 0 <= channel <= 15:
+        raise ValueError("PCA9685 channel must be between 0 and 15.")
+    if not math.isfinite(pulse_us):
+        raise ValueError("Pulse width must be a finite number.")
+    # Dry-run requests must remain testable while every physical channel is
+    # disabled and uncalibrated. Never initialize I2C or write PWM in this path.
+    if not HARDWARE_ENABLED:
+        return response("dry_run", channel=channel, pulse_us=pulse_us)
     item = get_channel_config(channel)
     pulse_min = float(item["pulse_min_us"])
     pulse_max = float(item["pulse_max_us"])
@@ -97,8 +106,8 @@ def set_pulse(channel: int, pulse_us: float) -> dict[str, Any]:
             f"Pulse {pulse_us:g} us is outside channel {channel} limits "
             f"({pulse_min:g}-{pulse_max:g} us)."
         )
-    if not HARDWARE_ENABLED or pca is None:
-        return response("dry_run", channel=channel, pulse_us=pulse_us)
+    if pca is None:
+        raise RuntimeError("PCA9685 hardware is not initialized.")
     pca.channels[channel].duty_cycle = pulse_to_duty_cycle(pulse_us)
     return response(
         "moved",
@@ -109,6 +118,14 @@ def set_pulse(channel: int, pulse_us: float) -> dict[str, Any]:
 
 
 def set_angle(channel: int, angle: float) -> dict[str, Any]:
+    if not 0 <= channel <= 15:
+        raise ValueError("PCA9685 channel must be between 0 and 15.")
+    if not math.isfinite(angle):
+        raise ValueError("Angle must be a finite number.")
+    # The Dell bridge can exercise its complete command path in dry-run mode
+    # before any servo calibration exists. This branch cannot move hardware.
+    if not HARDWARE_ENABLED:
+        return response("dry_run", channel=channel, angle=round(angle, 2))
     item = get_channel_config(channel)
     angle_min = float(item["angle_min"])
     angle_max = float(item["angle_max"])
