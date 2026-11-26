@@ -2686,10 +2686,38 @@ def compensated_servo_targets(servo_angles):
     return out
 
 
+def send_batch_raw(targets):
+    """Send one movement frame to the Pi instead of one TCP request per joint."""
+    if not targets:
+        return False
+    if IRIS_TRANSPORT == "pi":
+        if pi_client is None:
+            return False
+        converted = {
+            int(ch): (90.0 - (float(angle) / 70.0) * 90.0 if int(ch) == 0 else float(angle))
+            for ch, angle in targets.items()
+        }
+        result = pi_client.set_angles(converted)
+        status = result.get("status")
+        if status in ("moved", "dry_run"):
+            pi_reported_errors.clear()
+            return status == "moved"
+        error_key = min(int(ch) for ch in targets)
+        if error_key not in pi_reported_errors:
+            print(f"⚠ Pi rejected coordinated target: {result.get('error', status)}")
+            pi_reported_errors.add(error_key)
+        return False
+    if IRIS_TRANSPORT == "legacy_serial":
+        results = [send_raw(ch, angle) for ch, angle in targets.items()]
+        return all(results)
+    return False
+
+
 def smooth_move_worker():
     global moving, STEP_SIZE, STEP_DELAY
     while moving:
         any_moving = False
+        updates = {}
         with move_lock:
             for ch in list(target_angles.keys()):
                 target = target_angles[ch]
@@ -2698,23 +2726,24 @@ def smooth_move_worker():
                 if diff < 0.5:
                     if current != target:
                         current_angles[ch] = target
-                        send_raw(ch, int(target))
+                        updates[ch] = int(round(target))
                     continue
                 any_moving = True
-                # Ease-in/ease-out: move faster in middle, slower near start/end
-                # Use proportional speed based on remaining distance
+                # Ease-in/ease-out: move faster in middle, slower near start/end.
                 if diff < 5:
-                    step = max(0.5, STEP_SIZE * 0.4)  # decelerate near target
+                    step = max(0.5, STEP_SIZE * 0.4)
                 elif diff < 15:
-                    step = STEP_SIZE * 0.7  # medium speed near target
+                    step = STEP_SIZE * 0.7
                 else:
-                    step = STEP_SIZE  # full speed in middle
+                    step = STEP_SIZE
                 if current < target:
                     current = min(current + step, target)
                 else:
                     current = max(current - step, target)
                 current_angles[ch] = current
-                send_raw(ch, int(round(current)))
+                updates[ch] = int(round(current))
+        if updates:
+            send_batch_raw(updates)
         time.sleep(STEP_DELAY if any_moving else 0.05)
 
 def set_target(ch, angle):
