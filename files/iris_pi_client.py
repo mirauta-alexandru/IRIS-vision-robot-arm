@@ -74,6 +74,10 @@ class PiServoClient:
     def set_angle(self, channel: int, angle: float) -> dict[str, Any]:
         return self._request("SET_ANGLE", channel=int(channel), angle=float(angle))
 
+    def set_angles(self, angles: dict[int | str, float]) -> dict[str, Any]:
+        """Send one coordinated arm target as a single network request."""
+        normalized = {str(int(channel)): float(angle) for channel, angle in angles.items()}
+        return self._request("SET_ANGLES", angles=normalized)
     def set_pulse(self, channel: int, pulse_us: float) -> dict[str, Any]:
         return self._request("SET_PULSE", channel=int(channel), pulse_us=float(pulse_us))
 
