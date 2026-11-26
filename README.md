@@ -29,7 +29,9 @@ This release focuses on the current IRIS V7 control stack:
 To build IRIS from scratch, follow the project in this order:
 
 1. Print and assemble the robotic arm.
-2. Install the electronics: ESP32, PCA9685, servos, power supply, and common ground.
+2. Install the electronics: Raspberry Pi 4, PCA9685, servos, external power supply, and common ground.
+
+The Dell PC runs vision and IK; the Raspberry Pi only handles servo I/O. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the current network design.
 3. Connect a fixed overhead camera.
 4. Install the Python software.
 5. Calibrate the camera intrinsics.
@@ -133,7 +135,7 @@ python files/iris_ps4_manual.py
 
 ## What IRIS Is
 
-IRIS is an autonomous robotics prototype made from a 3D-printed 6-DOF arm, an overhead camera, an AI reasoning layer, ChArUco-based workspace calibration, an IKPy inverse-kinematics stack, and an ESP32/PCA9685 low-level control path.
+IRIS is an autonomous robotics prototype made from a 3D-printed 6-DOF arm, an overhead camera, an AI reasoning layer, ChArUco-based workspace calibration, an IKPy inverse-kinematics stack, and a Raspberry Pi/PCA9685 low-level control path.
 
 In practical terms, IRIS can:
 
@@ -142,7 +144,7 @@ In practical terms, IRIS can:
 - detect objects and convert image pixels into robot coordinates;
 - plan manipulation steps;
 - solve inverse kinematics with IKPy;
-- send joint targets to an ESP32;
+- send authenticated joint targets to the Raspberry Pi;
 - drive hobby servos through a PCA9685 PWM module;
 - be extended with new robot functions without rewriting the whole system.
 
@@ -162,7 +164,7 @@ Layer 2 - Cerebellum
   IKPy, URDF model, inverse kinematics, servo target generation
 
 Layer 1 - Spine
-  ESP32, serial protocol, PCA9685, stable PWM output for servos
+  Raspberry Pi TCP controller, I2C, PCA9685, stable PWM output for servos
 
 Layer 0 - Body
   3D-printed 6-DOF robotic arm, modified gripper, bearings, ATX power supply
@@ -178,7 +180,7 @@ Technical notes: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 4. ChArUco calibration converts that image position into robot workspace coordinates.
 5. The AI planner breaks the task into steps: approach, align, descend, grasp, lift.
 6. IKPy converts the XYZ target into joint angles.
-7. The ESP32 receives commands and drives the servos through the PCA9685 module.
+7. The Raspberry Pi receives authenticated commands and drives the servos through the PCA9685 module.
 8. The camera can be used again to verify the result and make small corrections.
 
 ## Repository Layout
@@ -212,7 +214,7 @@ IRIS uses a 6-DOF 3D-printed robotic arm based on MakerWorld design #1134925 by 
 - Raspberry Pi 4 Model B as the low-level controller;
 - PCA9685 16-channel PWM module at 50 Hz.
 
-Important electrical rule: **ESP32 GND, PCA9685 GND, and PSU GND must be common**.
+Important electrical rule: **Raspberry Pi GND, PCA9685 GND, and PSU GND must be common**.
 
 ## Software Requirements
 
