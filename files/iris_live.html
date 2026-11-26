@@ -105,7 +105,7 @@ function App(){
   
   // Bridge check
   useEffect(()=>{
-    const check=()=>{fetch(BRIDGE+"/ping").then(r=>r.json()).then(d=>{setConnected(d.serial===true);if(!cameraOn&&d.serial){fetch(BRIDGE+"/camera/start").then(r=>r.json()).then(c=>{if(c.ok)setCameraOn(true);}).catch(()=>{});}}).catch(()=>setConnected(false));};
+    const check=()=>{fetch(BRIDGE+"/ping").then(r=>r.json()).then(d=>{setConnected(d.controller_connected===true||d.serial===true);if(!cameraOn&&(d.controller_connected===true||d.serial===true)){fetch(BRIDGE+"/camera/start").then(r=>r.json()).then(c=>{if(c.ok)setCameraOn(true);}).catch(()=>{});}}).catch(()=>setConnected(false));};
     check();const iv=setInterval(check,5000);return()=>clearInterval(iv);
   },[cameraOn]);
   
@@ -427,7 +427,7 @@ Read it and tell the user what happened.
             setIrisState('acting');
             setStatusText('🏠 Merg acasă...');
             try{
-              await fetch(BRIDGE+"/gripper?angle=0");
+              await fetch(BRIDGE+"/gripper?angle=90");
               await fetch(BRIDGE+"/ik",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({x:200,y:0,z:250,send:true})});
               res={success:true};
             }catch(e){res={success:false,error:e.message};}
