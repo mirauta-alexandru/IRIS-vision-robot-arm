@@ -76,6 +76,12 @@ class PiControllerDryRunTests(unittest.TestCase):
             )["status"],
             "dry_run",
         )
+        self.assertEqual(
+            controller.handle_command(
+                {"command": "SET_ANGLES", "angles": {"0": 45, "1": 90, "6": 120}}
+            )["status"],
+            "dry_run",
+        )
         self.assertEqual(FakePCA9685.instances, [])
 
     def test_dry_run_cannot_use_calibration_jog(self):
