@@ -166,6 +166,40 @@ def all_arm_channels_calibrated() -> bool:
     return True
 
 
+def calibration_jog(channel: int, pulse_us: float) -> dict[str, Any]:
+    """Move one unloaded servo by a tightly bounded pulse during calibration only."""
+    if not HARDWARE_ENABLED or not CALIBRATION_MODE or pca is None:
+        raise PermissionError(
+            "Calibration jog requires IRIS_ENABLE_HARDWARE=1 and IRIS_CALIBRATION_MODE=1."
+        )
+    if not 0 <= channel <= 6:
+        raise ValueError("Calibration jog is limited to arm channels 0-6.")
+    if not math.isfinite(pulse_us):
+        raise ValueError("Pulse width must be a finite number.")
+    item = CHANNELS.get(str(channel))
+    if not isinstance(item, dict):
+        raise ValueError(f"Channel {channel} has no calibration entry.")
+    jog_min = item.get("jog_min_us")
+    jog_max = item.get("jog_max_us")
+    if not isinstance(jog_min, (int, float)) or not isinstance(jog_max, (int, float)):
+        raise ValueError(f"Channel {channel} has no temporary jog window.")
+    if not 400 <= jog_min < jog_max <= 2600:
+        raise ValueError(f"Channel {channel} temporary jog window is invalid.")
+    if not jog_min <= pulse_us <= jog_max:
+        raise ValueError(
+            f"Pulse {pulse_us:g} us is outside the temporary channel {channel} "
+            f"jog window ({jog_min:g}-{jog_max:g} us)."
+        )
+    pca.channels[channel].duty_cycle = pulse_to_duty_cycle(pulse_us)
+    return response(
+        "calibration_jogged",
+        hardware_moved=True,
+        channel=channel,
+        pulse_us=round(pulse_us, 1),
+        temporary_jog=True,
+    )
+
+
 def handle_command(command: dict[str, Any]) -> dict[str, Any]:
     action = str(command.get("command", "")).upper()
 
@@ -207,7 +241,14 @@ def handle_command(command: dict[str, Any]) -> dict[str, Any]:
         pulse_us = float(command["pulse_us"])
         return set_pulse(channel, pulse_us)
 
-    raise ValueError("Unsupported command. Use PING, STOP, SET_ANGLE, or SET_PULSE.")
+    if action == "CALIBRATION_JOG":
+        channel = int(command["channel"])
+        pulse_us = float(command["pulse_us"])
+        return calibration_jog(channel, pulse_us)
+
+    raise ValueError(
+        "Unsupported command. Use PING, STOP, SET_ANGLE, SET_PULSE, or CALIBRATION_JOG."
+    )
 
 
 class IRISRequestHandler(socketserver.StreamRequestHandler):
