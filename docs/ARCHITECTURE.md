@@ -75,6 +75,12 @@ Preset motions (hello wave, dance, pattern playback, and PS4 gamepad control) ar
 
 The network `STOP` command latches the command path and rejects later movement commands until the Pi controller process is deliberately restarted. It preserves the last PWM setpoints so a gravity-loaded arm does not suddenly lose holding torque. This is not a safety-rated emergency stop; the physical servo-power switch remains the emergency power disconnect.
 
+## Motion Transport
+
+The Dell smooth-movement worker sends each interpolation frame as one `SET_ANGLES` JSON-line request rather than opening a TCP request for every servo. The Pi validates the complete channel/angle set and computes every PWM duty cycle before writing any PCA9685 channel. If one requested joint is outside its calibrated limits, the whole frame is rejected before PWM changes.
+
+`SET_ANGLES` is a coordinated-motion command. It requires the separate `IRIS_ALLOW_COORDINATED_MOTION=1` gate and valid calibration for all seven arm channels. Dry-run mode accepts the same request shape for software-path testing but never initializes I2C or writes PWM.
+
 ## Command Flow
 
 ```text
