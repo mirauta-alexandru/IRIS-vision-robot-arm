@@ -49,6 +49,21 @@ small{color:#92a5bd}
 <button id="refresh" class="secondary">Refresh status</button>
 </div>
 <div id="result">No pulse has been sent.</div>
+<section class="status" aria-labelledby="recordTitle">
+  <strong id="recordTitle">Two-point calibration draft</strong>
+  <p>Jog the unloaded servo to a safe position, measure its logical joint angle, enter that angle, then record the current pulse. Repeat at a second safe position. Recording does not move the servo or enable the channel.</p>
+  <label for="logicalAngle">Measured logical angle (degrees)</label>
+  <input id="logicalAngle" type="number" min="-360" max="360" step="0.1" value="90"
+    style="padding:11px;border-radius:9px;background:#0c1728;color:#fff;border:1px solid #39506d">
+  <div class="actions">
+    <button id="recordA" class="secondary" type="button">Record point A</button>
+    <button id="recordB" class="secondary" type="button">Record point B</button>
+    <button id="clearPoints" class="secondary" type="button">Clear points</button>
+  </div>
+  <div id="points" class="status">Point A: not recorded\nPoint B: not recorded</div>
+  <button id="exportDraft" class="primary" type="button" disabled>Export unverified channel draft</button>
+  <p><small>Exported drafts always have enabled=false and calibration_verified=false. These two points only define a provisional linear mapping. Do not treat them as mechanical travel limits unless you have separately measured and checked both safe endpoints with the linkage and power disconnected as appropriate.</small></p>
+</section>
 <p><small>These jog windows are commissioning limits, not final servo travel calibration. CH1 uses 1550 µs as its center reference; the other channels use 1500 µs. All final angle/pulse limits remain unset and all channels remain disabled for normal motion.</small></p>
 </main>
 <script>
@@ -63,6 +78,54 @@ const channelConfig = {
   6:{min:1475,max:1525,center:1500}
 };
 const channel=document.getElementById("channel");
+const logicalAngle=document.getElementById("logicalAngle");
+const pointBox=document.getElementById("points");
+const recorded={A:null,B:null};
+function renderPoints(){
+  const fmt=p=>p?(`pulse ${p.pulse_us} µs · angle ${p.angle}°`):"not recorded";
+  pointBox.textContent="Point A: "+fmt(recorded.A)+"\\nPoint B: "+fmt(recorded.B);
+  const valid=recorded.A&&recorded.B&&recorded.A.pulse_us!==recorded.B.pulse_us&&recorded.A.angle!==recorded.B.angle;
+  document.getElementById("exportDraft").disabled=!valid;
+}
+function recordPoint(which){
+  const angle=Number(logicalAngle.value);
+  if(!Number.isFinite(angle)||angle < -360||angle > 360){resultBox.textContent="Enter a valid measured angle between -360° and 360°.";return;}
+  recorded[which]={pulse_us:Number(pulse.value),angle:Number(angle.toFixed(2))};
+  renderPoints();
+}
+document.getElementById("recordA").addEventListener("click",()=>recordPoint("A"));
+document.getElementById("recordB").addEventListener("click",()=>recordPoint("B"));
+document.getElementById("clearPoints").addEventListener("click",()=>{recorded.A=null;recorded.B=null;renderPoints();});
+document.getElementById("exportDraft").addEventListener("click",()=>{
+  if(!recorded.A||!recorded.B||recorded.A.pulse_us===recorded.B.pulse_us||recorded.A.angle===recorded.B.angle)return;
+  const pulseAscending=recorded.A.pulse_us<recorded.B.pulse_us;
+  const lowPulse=pulseAscending?recorded.A:recorded.B;
+  const highPulse=pulseAscending?recorded.B:recorded.A;
+  const lowAngle=recorded.A.angle<recorded.B.angle?recorded.A:recorded.B;
+  const highAngle=recorded.A.angle<recorded.B.angle?recorded.B:recorded.A;
+  const direction=(lowPulse===lowAngle)?"increasing":"decreasing";
+  const cfg=channelConfig[channel.value];
+  const draft={
+    channel:Number(channel.value),
+    name:channel.options[channel.selectedIndex].text.replace(/^CH\\d+ · /,"").toLowerCase().replaceAll(" ","_"),
+    enabled:false,
+    calibration_verified:false,
+    angle_min:Math.min(recorded.A.angle,recorded.B.angle),
+    angle_max:Math.max(recorded.A.angle,recorded.B.angle),
+    pulse_min_us:Math.min(recorded.A.pulse_us,recorded.B.pulse_us),
+    pulse_max_us:Math.max(recorded.A.pulse_us,recorded.B.pulse_us),
+    pulse_direction:direction,
+    jog_min_us:cfg.min,
+    jog_max_us:cfg.max,
+    notes:"Unverified two-point draft. Verify mechanical safe travel and mapping before any enablement."
+  };
+  const blob=new Blob([JSON.stringify(draft,null,2)+"\\n"],{type:"application/json"});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");a.href=url;a.download="iris-channel-"+channel.value+"-calibration-draft.json";a.click();
+  URL.revokeObjectURL(url);
+  resultBox.textContent="Exported an UNVERIFIED draft for CH"+channel.value+". It does not enable this channel.";
+});
+renderPoints();
 const pulse=document.getElementById("pulse");
 const pulseValue=document.getElementById("pulseValue");
 const statusBox=document.getElementById("status");
