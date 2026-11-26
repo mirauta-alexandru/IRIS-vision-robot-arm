@@ -64,7 +64,7 @@ Coordinated angle motion is allowed only when all seven channels have valid cali
 1. The Pi process has `IRIS_ENABLE_HARDWARE=1`.
 2. Every channel CH0–CH6 has `"enabled": true` and valid calibrated pulse endpoints in `servo_calibration.json`.
 
-Direct single-channel pulse jogging is separate and requires `IRIS_CALIBRATION_MODE=1`; it is intended only for controlled calibration, never for normal IK or autonomous movement.
+A separate `CALIBRATION_JOG` command can move exactly one channel inside its temporary `jog_min_us` / `jog_max_us` window. It requires BOTH `IRIS_ENABLE_HARDWARE=1` and `IRIS_CALIBRATION_MODE=1`. The temporary jog window is only ±25 µs around 1500 µs (CH1 wrist rotation: ±25 µs around the user's 1550 µs reference). These are deliberately narrow commissioning limits, not final calibrated travel limits. Keep the servo horn/linkage disconnected and the arm unloaded during this test. Never jog a servo that is buzzing, stalled, hot, or mechanically constrained.
 
 CH1 contains a provisional 1500–1600 µs range corresponding to 85–95° around the user's 1550 µs / 90° reference, but it remains disabled. It must be mechanically checked before enabling.
 
