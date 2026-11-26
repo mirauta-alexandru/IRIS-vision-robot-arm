@@ -77,5 +77,13 @@ class PiServoClient:
     def set_pulse(self, channel: int, pulse_us: float) -> dict[str, Any]:
         return self._request("SET_PULSE", channel=int(channel), pulse_us=float(pulse_us))
 
+    def calibration_jog(self, channel: int, pulse_us: float) -> dict[str, Any]:
+        """Request a tightly bounded one-servo calibration movement on the Pi."""
+        return self._request(
+            "CALIBRATION_JOG",
+            channel=int(channel),
+            pulse_us=float(pulse_us),
+        )
+
     def stop(self) -> dict[str, Any]:
         return self._request("STOP")
