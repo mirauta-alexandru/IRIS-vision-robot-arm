@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-IRIS Serial Bridge v5.0 — ikpy IK + Vision Pick + Gemini Robotics ER
-Browser → HTTP → ikpy IK → Serial → ESP32
+IRIS Bridge v7.0 — Dell vision/IK + Raspberry Pi PCA9685 transport
+Browser → HTTP → ikpy IK → authenticated TCP → Pi/PCA9685
 Vision: ChArUco homography + Gemini Robotics ER 1.6 for object detection
 """
 
