@@ -1,0 +1,30 @@
+name: IRIS Pi Controller Safety Checks
+
+on:
+  push:
+    branches:
+      - main
+      - feature/raspberry-pi-pca9685
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  pi-controller:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Compile IRIS control files
+        run: |
+          python -m py_compile \
+            files/iris_bridge.py \
+            files/iris_pi_client.py \
+            pi/iris_pca9685_server.py \
+            tests/test_pi_controller.py
+      - name: Run mocked Pi safety tests
+        run: python -m unittest discover -s tests -v
