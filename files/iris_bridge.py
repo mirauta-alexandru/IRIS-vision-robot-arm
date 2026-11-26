@@ -3287,6 +3287,23 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self.respond_json({"error": "iris_visualizer.html not found"}, 404)
             return
 
+        # ─── Local-only single-servo calibration panel ───
+        if parsed.path == "/calibration":
+            local_clients = {"127.0.0.1", "::1", os.environ.get("IRIS_PC_IP", "192.168.1.213")}
+            if self.client_address[0] not in local_clients:
+                self.respond_json({"error": "Calibration UI is restricted to the Dell PC."}, 403)
+                return
+            html_path = os.path.join(SCRIPT_DIR, "iris_calibration.html")
+            if os.path.exists(html_path):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                with open(html_path, "rb") as f:
+                    self.wfile.write(f.read())
+                return
+            self.respond_json({"error": "iris_calibration.html not found"}, 404)
+            return
+
         # ─── Serve IRIS Live interface ───
         if parsed.path == "/live":
             html_path = os.path.join(SCRIPT_DIR, "iris_live.html")
@@ -3306,6 +3323,27 @@ class BridgeHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length).decode()
+
+        if parsed.path in ("/calibration/jog", "/calibration/stop"):
+            local_clients = {"127.0.0.1", "::1", os.environ.get("IRIS_PC_IP", "192.168.1.213")}
+            if self.client_address[0] not in local_clients:
+                self.respond_json({"error": "Calibration controls are restricted to the Dell PC."}, 403)
+                return
+            if IRIS_TRANSPORT != "pi" or pi_client is None:
+                self.respond_json({"error": "Raspberry Pi controller is not connected."}, 503)
+                return
+            if parsed.path == "/calibration/stop":
+                result = pi_client.stop()
+            else:
+                try:
+                    data = json.loads(body)
+                    result = pi_client.calibration_jog(int(data["channel"]), float(data["pulse_us"]))
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                    self.respond_json({"error": f"Invalid calibration request: {exc}"}, 400)
+                    return
+            status_code = 200 if result.get("status") in ("calibration_jogged", "stopped") else 403
+            self.respond_json(result, status_code)
+            return
 
         if parsed.path == "/gamepad/start":
             self.respond_json(start_ps4_manual_process())
