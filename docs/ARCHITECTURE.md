@@ -71,7 +71,9 @@ CH1 contains a provisional 1500–1600 µs range corresponding to 85–95° arou
 
 Do not copy old V7 offsets or broad degree limits into the Pi calibration file. Calibrate each joint individually, with the linkage unloaded where possible. Stop immediately if a servo buzzes, stalls, heats, or needs manual force.
 
-The network `STOP` command disables PWM outputs when hardware mode is active, but it is not a safety-rated emergency stop. The physical servo-power switch remains the actual emergency power disconnect.
+Preset motions (hello wave, dance, pattern playback, and PS4 gamepad control) are disabled in the Dell bridge unless `IRIS_ALLOW_PRESET_MOTIONS=1` is explicitly set after calibration and review. Autonomous pick and Live robotics tasks are separately disabled unless `IRIS_ALLOW_AUTONOMOUS_MOTION=1` is explicitly set. Both flags default to OFF.
+
+The network `STOP` command disables PWM outputs when hardware mode is active, but it is not a safety-rated emergency stop. Cancel no longer sends a guessed home pose; it requests PWM output disable. The physical servo-power switch remains the actual emergency power disconnect.
 
 ## Command Flow
 
@@ -103,4 +105,5 @@ MG90S / MG996R servos
 - Pi PCA9685 server is implemented.
 - All servo channels are disabled by default.
 - Hardware movement remains off until per-channel pulse calibration is complete.
-- Automatic pick, dance, and broad legacy poses must not be used as calibration tests.
+- Preset motions and autonomous pick are disabled by default behind separate opt-in flags.
+- Cancel disables PWM outputs rather than sending an uncalibrated home pose.
