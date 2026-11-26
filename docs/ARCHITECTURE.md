@@ -62,8 +62,10 @@ The Pi converts joint angles into pulse widths using `pi/servo_calibration.json`
 Coordinated angle motion is allowed only when all three conditions are true:
 
 1. The Pi process has `IRIS_ENABLE_HARDWARE=1`.
-2. Every channel CH0–CH6 has `"enabled": true` and valid calibrated angle and pulse endpoints in `servo_calibration.json`.
+2. Every channel CH0–CH6 has `"enabled": true`, `"calibration_verified": true`, and valid calibrated angle and pulse endpoints in `servo_calibration.json`.
 3. `IRIS_ALLOW_COORDINATED_MOTION=1` is explicitly set after calibration and motion-path review. This extra gate defaults to OFF even when the hardware gate is enabled.
+
+The Dell-local calibration page supports recording two measured pulse/angle reference points for the selected channel and exporting an individual JSON draft. The draft always sets `enabled=false` and `calibration_verified=false`; it cannot enable motion. The Pi rejects any enabled channel whose calibration is not explicitly verified. The mapping supports both increasing and decreasing pulse direction, so mirrored or reversed joints do not need unsafe software offsets. The two-point draft is only a linear mapping proposal: it is not proof that the mechanical endpoints are safe.
 
 A Dell-local browser panel at `http://localhost:8765/calibration` sends the separate `CALIBRATION_JOG` command, which can move exactly one channel inside its temporary `jog_min_us` / `jog_max_us` window. The page and its POST endpoints are restricted to the Dell PC's local addresses. It requires BOTH `IRIS_ENABLE_HARDWARE=1` and `IRIS_CALIBRATION_MODE=1`. The temporary jog window is only ±25 µs around 1500 µs (CH1 wrist rotation: ±25 µs around the user's 1550 µs reference). These are deliberately narrow commissioning limits, not final calibrated travel limits. Keep the servo horn/linkage disconnected and the arm unloaded during this test. Never jog a servo that is buzzing, stalled, hot, or mechanically constrained.
 
