@@ -48,6 +48,7 @@ if not isinstance(CHANNELS, dict):
     raise RuntimeError("servo_calibration.json must contain a channels object.")
 
 pca: PCA9685 | None = None
+STOP_LATCHED = False
 if HARDWARE_ENABLED:
     i2c = busio.I2C(board.SCL, board.SDA)
     pca = PCA9685(i2c)
@@ -91,6 +92,8 @@ def pulse_to_duty_cycle(pulse_us: float) -> int:
 
 
 def set_pulse(channel: int, pulse_us: float) -> dict[str, Any]:
+    if STOP_LATCHED:
+        raise PermissionError("STOP is latched. Restart the Pi controller deliberately before issuing more commands.")
     if not 0 <= channel <= 15:
         raise ValueError("PCA9685 channel must be between 0 and 15.")
     if not math.isfinite(pulse_us):
@@ -119,6 +122,8 @@ def set_pulse(channel: int, pulse_us: float) -> dict[str, Any]:
 
 
 def set_angle(channel: int, angle: float) -> dict[str, Any]:
+    if STOP_LATCHED:
+        raise PermissionError("STOP is latched. Restart the Pi controller deliberately before issuing more commands.")
     if not 0 <= channel <= 15:
         raise ValueError("PCA9685 channel must be between 0 and 15.")
     if not math.isfinite(angle):
@@ -169,6 +174,8 @@ def all_arm_channels_calibrated() -> bool:
 
 def calibration_jog(channel: int, pulse_us: float) -> dict[str, Any]:
     """Move one unloaded servo by a tightly bounded pulse during calibration only."""
+    if STOP_LATCHED:
+        raise PermissionError("STOP is latched. Restart the Pi controller deliberately before issuing more commands.")
     if not HARDWARE_ENABLED or not CALIBRATION_MODE or pca is None:
         raise PermissionError(
             "Calibration jog requires IRIS_ENABLE_HARDWARE=1 and IRIS_CALIBRATION_MODE=1."
@@ -216,14 +223,21 @@ def handle_command(command: dict[str, Any]) -> dict[str, Any]:
             full_arm_ready=all_arm_channels_calibrated(),
             calibration_mode=CALIBRATION_MODE,
             coordinated_motion_enabled=COORDINATED_MOTION_ENABLED,
+            stop_latched=STOP_LATCHED,
         )
 
     if action == "STOP":
+        global STOP_LATCHED
+        STOP_LATCHED = True
         if HARDWARE_ENABLED and pca is not None:
             for channel in range(16):
                 pca.channels[channel].duty_cycle = 0
-            return response("outputs_disabled", outputs_disabled=True)
-        return response("dry_run", message="No PWM outputs were active.")
+        return response(
+            "stopped",
+            outputs_disabled=bool(HARDWARE_ENABLED),
+            stop_latched=True,
+            message="Commands are blocked until the Pi controller process is restarted.",
+        )
 
     if action == "SET_ANGLE":
         if HARDWARE_ENABLED and not COORDINATED_MOTION_ENABLED:
