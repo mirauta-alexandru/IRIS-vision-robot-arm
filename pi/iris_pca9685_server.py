@@ -228,15 +228,15 @@ def handle_command(command: dict[str, Any]) -> dict[str, Any]:
         )
 
     if action == "STOP":
+        # Latch the command path but preserve the last PWM setpoints so a
+        # gravity-loaded arm does not suddenly lose servo holding torque.
         STOP_LATCHED = True
-        if HARDWARE_ENABLED and pca is not None:
-            for channel in range(16):
-                pca.channels[channel].duty_cycle = 0
         return response(
             "stopped",
-            outputs_disabled=bool(HARDWARE_ENABLED),
+            outputs_held=bool(HARDWARE_ENABLED),
+            outputs_disabled=False,
             stop_latched=True,
-            message="Commands are blocked until the Pi controller process is restarted.",
+            message="Last PWM setpoints are held. Commands are blocked until the Pi controller process is restarted.",
         )
 
     if action == "SET_ANGLE":
