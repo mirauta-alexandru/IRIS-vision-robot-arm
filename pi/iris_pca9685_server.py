@@ -32,6 +32,7 @@ ALLOWED_PC_IP = os.environ.get("IRIS_ALLOWED_PC_IP", "192.168.1.213")
 TOKEN = os.environ.get("IRIS_TOKEN", "")
 HARDWARE_ENABLED = os.environ.get("IRIS_ENABLE_HARDWARE", "0") == "1"
 CALIBRATION_MODE = os.environ.get("IRIS_CALIBRATION_MODE", "0") == "1"
+COORDINATED_MOTION_ENABLED = os.environ.get("IRIS_ALLOW_COORDINATED_MOTION", "0") == "1"
 CONFIG_PATH = Path(__file__).with_name("servo_calibration.json")
 MAX_LINE_BYTES = 4096
 
@@ -214,6 +215,7 @@ def handle_command(command: dict[str, Any]) -> dict[str, Any]:
             ],
             full_arm_ready=all_arm_channels_calibrated(),
             calibration_mode=CALIBRATION_MODE,
+            coordinated_motion_enabled=COORDINATED_MOTION_ENABLED,
         )
 
     if action == "STOP":
@@ -224,6 +226,10 @@ def handle_command(command: dict[str, Any]) -> dict[str, Any]:
         return response("dry_run", message="No PWM outputs were active.")
 
     if action == "SET_ANGLE":
+        if HARDWARE_ENABLED and not COORDINATED_MOTION_ENABLED:
+            raise PermissionError(
+                "Coordinated motion is locked. Set IRIS_ALLOW_COORDINATED_MOTION=1 only after calibration and review."
+            )
         if HARDWARE_ENABLED and not all_arm_channels_calibrated():
             raise PermissionError(
                 "Coordinated angle motion is locked until all seven servo channels are calibrated."
