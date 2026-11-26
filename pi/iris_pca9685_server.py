@@ -83,6 +83,8 @@ def get_channel_config(channel: int) -> dict[str, Any]:
         raise ValueError(f"Channel {channel} has no calibrated pulse limits.")
     if not 400 <= pulse_min < pulse_max <= 2600:
         raise ValueError(f"Channel {channel} pulse limits are invalid.")
+    if item.get("pulse_direction", "increasing") not in ("increasing", "decreasing"):
+        raise ValueError(f"Channel {channel} pulse direction must be increasing or decreasing.")
     return item
 
 
@@ -147,7 +149,10 @@ def set_angle(channel: int, angle: float) -> dict[str, Any]:
     pulse_min = float(item["pulse_min_us"])
     pulse_max = float(item["pulse_max_us"])
     ratio = (angle - angle_min) / (angle_max - angle_min)
-    pulse_us = pulse_min + ratio * (pulse_max - pulse_min)
+    if item.get("pulse_direction", "increasing") == "decreasing":
+        pulse_us = pulse_max - ratio * (pulse_max - pulse_min)
+    else:
+        pulse_us = pulse_min + ratio * (pulse_max - pulse_min)
     result = set_pulse(channel, pulse_us)
     result["angle"] = round(angle, 2)
     return result
@@ -184,7 +189,11 @@ def set_angles(angles: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"Channel {channel} angle {angle:g} is outside calibrated limits ({angle_min:g}-{angle_max:g}).")
         pulse_min = float(item["pulse_min_us"])
         pulse_max = float(item["pulse_max_us"])
-        pulse_us = pulse_min + ((angle - angle_min) / (angle_max - angle_min)) * (pulse_max - pulse_min)
+        ratio = (angle - angle_min) / (angle_max - angle_min)
+        if item.get("pulse_direction", "increasing") == "decreasing":
+            pulse_us = pulse_max - ratio * (pulse_max - pulse_min)
+        else:
+            pulse_us = pulse_min + ratio * (pulse_max - pulse_min)
         pwm_plan[channel] = pulse_to_duty_cycle(pulse_us)
     if pca is None:
         raise RuntimeError("PCA9685 hardware is not initialized.")
@@ -211,6 +220,8 @@ def all_arm_channels_calibrated() -> bool:
         if not isinstance(angle_min, (int, float)) or not isinstance(angle_max, (int, float)):
             return False
         if angle_min >= angle_max:
+            return False
+        if item.get("pulse_direction", "increasing") not in ("increasing", "decreasing"):
             return False
     return True
 
