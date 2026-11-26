@@ -151,6 +151,45 @@ def set_angle(channel: int, angle: float) -> dict[str, Any]:
     return result
 
 
+def set_angles(angles: dict[str, Any]) -> dict[str, Any]:
+    """Validate a coordinated multi-joint target completely before writing PWM."""
+    if STOP_LATCHED:
+        raise PermissionError("STOP is latched. Restart the Pi controller deliberately before issuing more commands.")
+    if not isinstance(angles, dict) or not angles:
+        raise ValueError("SET_ANGLES requires a non-empty channel-to-angle object.")
+    normalized: dict[int, float] = {}
+    for raw_channel, raw_angle in angles.items():
+        channel = int(raw_channel)
+        angle = float(raw_angle)
+        if not 0 <= channel <= 6:
+            raise ValueError("Coordinated arm targets are limited to channels 0-6.")
+        if not math.isfinite(angle):
+            raise ValueError(f"Channel {channel} angle must be finite.")
+        normalized[channel] = angle
+    if not HARDWARE_ENABLED:
+        return response("dry_run", channels=normalized, hardware_moved=False)
+    if not COORDINATED_MOTION_ENABLED:
+        raise PermissionError("Coordinated motion is locked until calibration review.")
+    if not all_arm_channels_calibrated():
+        raise PermissionError("Coordinated motion is locked until all seven servo channels are calibrated.")
+    # Build and validate the entire PWM plan before changing any channel.
+    pwm_plan: dict[int, int] = {}
+    for channel, angle in normalized.items():
+        item = get_channel_config(channel)
+        angle_min = float(item["angle_min"])
+        angle_max = float(item["angle_max"])
+        if not angle_min <= angle <= angle_max:
+            raise ValueError(f"Channel {channel} angle {angle:g} is outside calibrated limits ({angle_min:g}-{angle_max:g}).")
+        pulse_min = float(item["pulse_min_us"])
+        pulse_max = float(item["pulse_max_us"])
+        pulse_us = pulse_min + ((angle - angle_min) / (angle_max - angle_min)) * (pulse_max - pulse_min)
+        pwm_plan[channel] = pulse_to_duty_cycle(pulse_us)
+    if pca is None:
+        raise RuntimeError("PCA9685 hardware is not initialized.")
+    for channel, duty_cycle in pwm_plan.items():
+        pca.channels[channel].duty_cycle = duty_cycle
+    return response("moved", channels=normalized, hardware_moved=True)
+
 def all_arm_channels_calibrated() -> bool:
     """Require all seven arm joints before accepting coordinated angle motion."""
     for channel in range(7):
@@ -252,6 +291,8 @@ def handle_command(command: dict[str, Any]) -> dict[str, Any]:
         angle = float(command["angle"])
         return set_angle(channel, angle)
 
+    if action == "SET_ANGLES":
+        return set_angles(command.get("angles", {}))
     if action == "SET_PULSE":
         if HARDWARE_ENABLED and not CALIBRATION_MODE:
             raise PermissionError(
@@ -267,7 +308,7 @@ def handle_command(command: dict[str, Any]) -> dict[str, Any]:
         return calibration_jog(channel, pulse_us)
 
     raise ValueError(
-        "Unsupported command. Use PING, STOP, SET_ANGLE, SET_PULSE, or CALIBRATION_JOG."
+        "Unsupported command. Use PING, STOP, SET_ANGLE, SET_ANGLES, SET_PULSE, or CALIBRATION_JOG."
     )
 
 
