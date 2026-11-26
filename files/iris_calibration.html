@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IRIS Servo Calibration</title>
+<style>
+:root{color-scheme:dark;font-family:Inter,system-ui,sans-serif;background:#0b1220;color:#e7eef8}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}
+main{width:min(680px,100%);background:#121d30;border:1px solid #263751;border-radius:18px;padding:26px;box-shadow:0 18px 55px #0006}
+h1{margin:0 0 8px;font-size:25px}p{color:#aebed2;line-height:1.5}
+.warning{background:#3b2517;border:1px solid #87552d;color:#ffd7ad;padding:13px 15px;border-radius:10px;margin:18px 0}
+.status{padding:12px 14px;border-radius:10px;background:#1b2a40;margin:16px 0;font-size:14px;line-height:1.6}
+label{display:block;margin:18px 0 8px;font-weight:650}
+select,input{width:100%;accent-color:#56a8ff}
+select{padding:12px;border-radius:9px;background:#0c1728;color:#fff;border:1px solid #39506d;font-size:16px}
+.reading{display:flex;justify-content:space-between;align-items:center;margin-top:12px;font-variant-numeric:tabular-nums}
+.pulse{font-size:28px;font-weight:750;color:#8cc6ff}
+.actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:22px}
+button{border:0;border-radius:10px;padding:12px 17px;font-weight:700;font-size:14px;cursor:pointer}
+button:disabled{opacity:.4;cursor:not-allowed}
+.primary{background:#2385e8;color:#fff}.danger{background:#a93434;color:#fff}.secondary{background:#263a55;color:#e7eef8}
+#result{white-space:pre-wrap;overflow-wrap:anywhere;background:#0b1525;padding:12px;border-radius:9px;min-height:46px;margin-top:16px;color:#b9d6f5;font-size:13px}
+small{color:#92a5bd}
+</style>
+</head>
+<body>
+<main>
+<h1>IRIS · Servo Calibration</h1>
+<p>One servo at a time. This panel sends a single bounded pulse only when the Pi is explicitly in calibration mode.</p>
+<div class="warning"><strong>Before jogging:</strong> disconnect the servo horn/linkage and unload the joint. Keep the physical servo-power switch within reach. Stop immediately if a servo buzzes, stalls, heats, or moves unexpectedly. This software is not an emergency stop.</div>
+<div id="status" class="status">Checking Raspberry Pi controller…</div>
+<label for="channel">Servo channel</label>
+<select id="channel">
+<option value="0">CH0 · Gripper MG90S</option>
+<option value="1">CH1 · Wrist rotation MG90S</option>
+<option value="2">CH2 · Wrist pitch MG90S</option>
+<option value="3">CH3 · Elbow MG996R</option>
+<option value="4">CH4 · Shoulder A MG996R</option>
+<option value="5">CH5 · Shoulder B MG996R</option>
+<option value="6">CH6 · Base MG996R</option>
+</select>
+<label for="pulse">Temporary jog pulse</label>
+<input id="pulse" type="range" min="1475" max="1525" step="5" value="1500">
+<div class="reading"><small>Temporary window only · ±25 µs</small><span id="pulseValue" class="pulse">1500 µs</span></div>
+<div class="actions">
+<button id="send" class="primary" disabled>Send this pulse</button>
+<button id="stop" class="danger" disabled>Latch software STOP</button>
+<button id="refresh" class="secondary">Refresh status</button>
+</div>
+<div id="result">No pulse has been sent.</div>
+<p><small>These jog windows are commissioning limits, not final servo travel calibration. CH1 uses 1550 µs as its center reference; the other channels use 1500 µs. All final angle/pulse limits remain unset and all channels remain disabled for normal motion.</small></p>
+</main>
+<script>
+const API = window.location.origin;
+const channelConfig = {
+  0:{min:1475,max:1525,center:1500},
+  1:{min:1525,max:1575,center:1550},
+  2:{min:1475,max:1525,center:1500},
+  3:{min:1475,max:1525,center:1500},
+  4:{min:1475,max:1525,center:1500},
+  5:{min:1475,max:1525,center:1500},
+  6:{min:1475,max:1525,center:1500}
+};
+const channel=document.getElementById("channel");
+const pulse=document.getElementById("pulse");
+const pulseValue=document.getElementById("pulseValue");
+const statusBox=document.getElementById("status");
+const resultBox=document.getElementById("result");
+const sendButton=document.getElementById("send");
+const stopButton=document.getElementById("stop");
+function updatePulse(){pulseValue.textContent=pulse.value+" µs";}
+function configureChannel(){
+  const cfg=channelConfig[channel.value];
+  pulse.min=cfg.min;pulse.max=cfg.max;pulse.value=cfg.center;
+  updatePulse();
+}
+channel.addEventListener("change",configureChannel);
+pulse.addEventListener("input",updatePulse);
+async function refreshStatus(){
+  try{
+    const r=await fetch(API+"/ping",{cache:"no-store"});
+    const d=await r.json();
+    const c=d.controller||{};
+    const connected=d.controller_connected===true;
+    const hardware=c.hardware_enabled===true;
+    const calibration=c.calibration_mode===true;
+    const stopped=c.stop_latched===true;
+    const ready=connected&&hardware&&calibration&&!stopped;
+    statusBox.textContent=[
+      "Pi connection: "+(connected?"connected":"not connected"),
+      "Hardware gate: "+(hardware?"ON":"OFF / dry-run"),
+      "Calibration mode: "+(calibration?"ON":"OFF"),
+      "STOP latch: "+(stopped?"ACTIVE — restart Pi controller to clear":"clear"),
+      "Calibration jog: "+(ready?"READY":"LOCKED")
+    ].join("\n");
+    sendButton.disabled=!ready;
+    stopButton.disabled=!connected||stopped;
+  }catch(e){
+    statusBox.textContent="Could not read bridge/Pi status: "+e;
+    sendButton.disabled=true;stopButton.disabled=true;
+  }
+}
+sendButton.addEventListener("click",async()=>{
+  const payload={channel:Number(channel.value),pulse_us:Number(pulse.value)};
+  sendButton.disabled=true;
+  try{
+    const r=await fetch(API+"/calibration/jog",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+    const d=await r.json();
+    resultBox.textContent=JSON.stringify(d,null,2);
+  }catch(e){resultBox.textContent="Request failed: "+e;}
+  await refreshStatus();
+});
+stopButton.addEventListener("click",async()=>{
+  if(!confirm("Latch STOP? The Pi will reject all further movement commands until its controller is restarted."))return;
+  stopButton.disabled=true;
+  try{
+    const r=await fetch(API+"/calibration/stop",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
+    resultBox.textContent=JSON.stringify(await r.json(),null,2);
+  }catch(e){resultBox.textContent="STOP request failed: "+e;}
+  await refreshStatus();
+});
+document.getElementById("refresh").addEventListener("click",refreshStatus);
+configureChannel();refreshStatus();setInterval(refreshStatus,3000);
+</script>
+</body>
+</html>
