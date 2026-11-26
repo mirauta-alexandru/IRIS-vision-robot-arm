@@ -73,7 +73,7 @@ Do not copy old V7 offsets or broad degree limits into the Pi calibration file. 
 
 Preset motions (hello wave, dance, pattern playback, and PS4 gamepad control) are disabled in the Dell bridge unless `IRIS_ALLOW_PRESET_MOTIONS=1` is explicitly set after calibration and review. Autonomous pick and Live robotics tasks are separately disabled unless `IRIS_ALLOW_AUTONOMOUS_MOTION=1` is explicitly set. Both flags default to OFF.
 
-The network `STOP` command disables PWM outputs when hardware mode is active, but it is not a safety-rated emergency stop. Cancel no longer sends a guessed home pose; it requests PWM output disable. The physical servo-power switch remains the actual emergency power disconnect.
+The network `STOP` command disables PWM outputs when hardware mode is active, but it is not a safety-rated emergency stop. Cancel no longer sends a guessed home pose; it requests PWM output disable. The Pi latches STOP and rejects later movement commands until its controller process is deliberately restarted. The physical servo-power switch remains the actual emergency power disconnect.
 
 ## Command Flow
 
