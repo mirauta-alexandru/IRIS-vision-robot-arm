@@ -182,6 +182,25 @@ class PiControllerHardwareGateTests(unittest.TestCase):
             )
         self.assertTrue(all(ch.duty_cycle == 0 for ch in FakePCA9685.instances[0].channels))
 
+    def test_reverse_calibration_maps_low_angle_to_high_pulse(self):
+        controller = load_controller(hardware="1", coordinated="1")
+        pca = FakePCA9685.instances[0]
+        for item in controller.CHANNELS.values():
+            item.update({
+                "enabled": True,
+                "calibration_verified": True,
+                "angle_min": 0,
+                "angle_max": 180,
+                "pulse_min_us": 1000,
+                "pulse_max_us": 2000,
+            })
+        controller.CHANNELS["0"]["pulse_direction"] = "decreasing"
+        result = controller.handle_command(
+            {"command": "SET_ANGLE", "channel": 0, "angle": 0}
+        )
+        self.assertEqual(result["status"], "moved")
+        self.assertEqual(pca.channels[0].duty_cycle, controller.pulse_to_duty_cycle(2000))
+
     def test_stop_latches_calibration_jog(self):
         controller = load_controller(hardware="1", calibration="1")
         controller.handle_command({"command": "STOP"})
