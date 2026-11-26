@@ -209,6 +209,7 @@ def calibration_jog(channel: int, pulse_us: float) -> dict[str, Any]:
 
 
 def handle_command(command: dict[str, Any]) -> dict[str, Any]:
+    global STOP_LATCHED
     action = str(command.get("command", "")).upper()
 
     if action == "PING":
@@ -227,7 +228,6 @@ def handle_command(command: dict[str, Any]) -> dict[str, Any]:
         )
 
     if action == "STOP":
-        global STOP_LATCHED
         STOP_LATCHED = True
         if HARDWARE_ENABLED and pca is not None:
             for channel in range(16):
