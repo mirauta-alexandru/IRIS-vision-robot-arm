@@ -24,6 +24,8 @@ This release focuses on the current IRIS V7 control stack:
 - a fresh PS4 manual controller script for direct servo testing through the bridge;
 - improved visualizer controls for PS4 mode, hello wave, and music dance routines;
 - authenticated Dell-to-Pi PCA9685 control with dry-run and per-channel calibration gates.
+- batched, all-or-nothing multi-joint motion frames with Pi-side validation;
+- mocked Pi-controller safety tests and a GitHub Actions syntax/test workflow.
 
 ## Build Overview
 
