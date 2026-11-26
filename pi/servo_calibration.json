@@ -17,8 +17,8 @@
       "enabled": false,
       "angle_min": null,
       "angle_max": null,
-      "pulse_min_us": 1500,
-      "pulse_max_us": 1600,
+      "pulse_min_us": null,
+      "pulse_max_us": null,
       "notes": "Provisional only: 90 degrees is the user's 1550 us reference. Keep disabled until mechanically checked. Final angle and pulse limits must be measured for this exact joint before enabling.",
       "jog_min_us": 1525,
       "jog_max_us": 1575
